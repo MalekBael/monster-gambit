@@ -43,6 +43,8 @@ Generated\ Files/
 
 # Template files
 templates/notes
+templates
+/templates/
 
 # MSTest test Results
 [Tt]est[Rr]esult*/
