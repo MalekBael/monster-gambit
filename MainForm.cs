@@ -3,8 +3,9 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
-using System.Linq; // Add this namespace
+using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Windows.Forms;
 
 namespace DualEditorApp
@@ -135,10 +136,16 @@ namespace DualEditorApp
                         editorRight.Language = Language.JSON;
                         gambitPanel.LoadGambits(content);
                     }
-                    else if (ext == ".cpp")
-                        editorRight.Language = Language.Custom; // No built-in C++ highlighting
                     else
-                        editorRight.Language = Language.Custom;
+                    {
+                        // For non-JSON files, clear the gambit panel
+                        gambitPanel.ClearGambits();
+                        
+                        if (ext == ".cpp")
+                            editorRight.Language = Language.Custom; // No built-in C++ highlighting
+                        else
+                            editorRight.Language = Language.Custom;
+                    }
 
                     editorRight.Selection.Start = new Place(0, 0); // Move caret to start
                     editorRight.Refresh();
@@ -152,6 +159,9 @@ namespace DualEditorApp
 
         private void SaveFile(object sender, EventArgs e)
         {
+            // Ensure gambits are synced to JSON before saving
+            gambitPanel.SyncToJson();
+
             if (saveFileDialog.ShowDialog() == DialogResult.OK)
             {
                 try
@@ -264,6 +274,23 @@ namespace DualEditorApp
                 lastSearchIndex = -1;
             }
         }
+
+        // Add these methods to your MainForm class
+        public string GetEditorText()
+        {
+            return editorRight.Text;
+        }
+
+        public void SetEditorText(string text)
+        {
+            editorRight.Text = text;
+        }
+
+        // Connect gambits changes to the editor
+        private void GambitControl_Changed(object sender, EventArgs e)
+        {
+            gambitPanel.SyncToJson();
+        }
     }
 
     // Gambit classes to represent the data structure
@@ -334,24 +361,24 @@ namespace DualEditorApp
 
                 // Parse JSON
                 var jsonDoc = JsonDocument.Parse(json);
-                
+
                 // Get the root element (sprites, golem)
                 var rootEnumerator = jsonDoc.RootElement.EnumerateObject();
                 if (!rootEnumerator.MoveNext())
                     return;
-                
+
                 var rootType = rootEnumerator.Current.Name; // "sprites" or "golem"
                 var monstersElement = jsonDoc.RootElement.GetProperty(rootType);
-                
+
                 // Position tracker for adding controls sequentially
                 int yPosition = 70; // Start a bit lower
-                
+
                 // Process each monster/sprite in the JSON
                 foreach (var monsterProperty in monstersElement.EnumerateObject())
                 {
                     string monsterName = monsterProperty.Name;
                     JsonElement monsterElement = monsterProperty.Value;
-                    
+
                     // Add monster header
                     Label monsterLabel = new Label
                     {
@@ -366,43 +393,50 @@ namespace DualEditorApp
                     };
                     contentPanel.Controls.Add(monsterLabel);
                     yPosition += monsterLabel.Height + 5;
-                    
+
                     // Get the gambit timelines for this monster
                     var timeLines = monsterElement.GetProperty("gambitPack").GetProperty("timeLines");
-                    
+
                     // Process each gambit for this monster
                     foreach (var timeline in timeLines.EnumerateArray())
                     {
-                        // Create gambit data
+                        bool isDisabled = timeline.TryGetProperty("originalCondition", out var _);
+                        string condition = isDisabled ? 
+                            timeline.GetProperty("originalCondition").GetString() : 
+                            timeline.GetProperty("condition").GetString();
+
                         var gambit = new Gambit
                         {
-                            Condition = timeline.GetProperty("condition").GetString(),
+                            Condition = condition,
                             ActionId = timeline.GetProperty("actionId").GetInt32(),
                             Timing = timeline.GetProperty("timing").GetInt32(),
                             Description = timeline.GetProperty("description").GetString(),
                             ActionParam = timeline.GetProperty("actionParam").GetInt32(),
-                            Enabled = true
+                            Enabled = !isDisabled
                         };
-                        
+
                         if (timeline.TryGetProperty("radius", out var radius))
                             gambit.Radius = radius.GetDouble();
-                        
+
                         gambits.Add(gambit);
-                        
+
                         // Create and position gambit row control
                         var gambitRow = new GambitRowControl(gambit, this);
                         gambitRow.Location = new Point(20, yPosition);
                         gambitRow.Width = contentPanel.ClientSize.Width - 50;
                         contentPanel.Controls.Add(gambitRow);
                         gambitControls.Add(gambitRow);
-                        
+
+                        // Inside the LoadGambits method, after creating each gambitRow:
+                        gambitRow.GambitChanged += (s, e) => SyncToJson();
+
                         yPosition += gambitRow.Height + 3;
                     }
-                    
+
                     // Add space between monsters
                     yPosition += 15;
                 }
-                
+
                 // Make sure the panel refreshes
                 contentPanel.PerformLayout();
                 contentPanel.Refresh();
@@ -415,7 +449,93 @@ namespace DualEditorApp
 
         public void SyncToJson()
         {
-            // TODO: Generate JSON from gambits
+            try
+            {
+                if (gambits.Count == 0 || parentForm == null)
+                    return;
+
+                // Get the current JSON text
+                string currentJson = parentForm.GetEditorText();
+
+                // Parse the current JSON
+                var jsonDoc = JsonDocument.Parse(currentJson);
+                var rootEnumerator = jsonDoc.RootElement.EnumerateObject();
+                if (!rootEnumerator.MoveNext())
+                    return;
+
+                var rootType = rootEnumerator.Current.Name; // "sprites" or "golem"
+
+                // Create a JsonNode from the current JSON to make modifications
+                var jsonNode = JsonNode.Parse(currentJson);
+
+                // Update each monster's gambits
+                int gambitIndex = 0;
+                foreach (var monsterProperty in jsonDoc.RootElement.GetProperty(rootType).EnumerateObject())
+                {
+                    string monsterName = monsterProperty.Name;
+                    var timeLinesCount = monsterProperty.Value.GetProperty("gambitPack").GetProperty("timeLines").GetArrayLength();
+
+                    // Get the JsonArray for the current monster's timelines
+                    var timeLines = jsonNode[rootType][monsterName]["gambitPack"]["timeLines"].AsArray();
+
+                    // Update the gambits for this monster
+                    for (int i = 0; i < timeLinesCount; i++)
+                    {
+                        if (gambitIndex < gambits.Count && gambitIndex < gambitControls.Count)
+                        {
+                            var gambit = gambits[gambitIndex];
+
+                            if (!gambit.Enabled)
+                            {
+                                // Store original values for re-enabling later
+                                if (!timeLines[i].AsObject().ContainsKey("originalCondition"))
+                                {
+                                    // Save original values
+                                    timeLines[i]["originalCondition"] = timeLines[i]["condition"].GetValue<string>();
+                                    timeLines[i]["originalActionId"] = timeLines[i]["actionId"].GetValue<int>();
+                                    
+                                    // Set actionId to 0 - this is likely to be an invalid action ID 
+                                    // that the action manager won't be able to handle
+                                    timeLines[i]["actionId"] = 0;
+                                    
+                                    // Also modify condition to ensure the target can't be found
+                                    timeLines[i]["condition"] = "None";  // "None" is a valid condition but unlikely to have targets
+                                }
+                            }
+                            else if (timeLines[i].AsObject().ContainsKey("originalCondition"))
+                            {
+                                // Restore the original values
+                                timeLines[i]["condition"] = timeLines[i]["originalCondition"].GetValue<string>();
+                                timeLines[i]["actionId"] = timeLines[i]["originalActionId"].GetValue<int>();
+                                
+                                // Remove our temp fields
+                                timeLines[i].AsObject().Remove("originalCondition");
+                                timeLines[i].AsObject().Remove("originalActionId");
+                            }
+
+                            gambitIndex++;
+                        }
+                    }
+                }
+
+                // Format the JSON with indentation
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                string updatedJson = jsonNode.ToJsonString(options);
+
+                // Update the editor text with the new JSON
+                parentForm.SetEditorText(updatedJson);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error updating JSON: {ex.Message}\n{ex.StackTrace}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        public void ClearGambits()
+        {
+            this.Controls.Clear();
+            gambitControls.Clear();
+            gambits.Clear();
         }
     }
 
@@ -428,6 +548,8 @@ namespace DualEditorApp
         private Label conditionLabel;
         private Label actionLabel;
 
+        public event EventHandler GambitChanged;
+
         public GambitRowControl(Gambit gambit, GambitPanel parent)
         {
             this.gambit = gambit;
@@ -435,7 +557,7 @@ namespace DualEditorApp
             this.Height = 35;
             this.BackColor = Color.FromArgb(50, 50, 50);  // Darker background
             this.BorderStyle = BorderStyle.FixedSingle;
-            
+
             // Create layout
             enabledCheck = new CheckBox
             {
@@ -446,12 +568,13 @@ namespace DualEditorApp
                 ForeColor = Color.Yellow,
                 FlatStyle = FlatStyle.Flat
             };
-            enabledCheck.CheckedChanged += (s, e) => 
+            enabledCheck.CheckedChanged += (s, e) =>
             {
                 gambit.Enabled = enabledCheck.Checked;
                 enabledCheck.Text = gambit.Enabled ? "ON" : "OFF";
+                GambitChanged?.Invoke(this, EventArgs.Empty);
             };
-            
+
             timingLabel = new Label
             {
                 Text = gambit.Timing.ToString(),
@@ -461,7 +584,7 @@ namespace DualEditorApp
                 TextAlign = ContentAlignment.MiddleCenter,
                 BorderStyle = BorderStyle.FixedSingle
             };
-            
+
             string conditionText = MapConditionToUI(gambit.Condition);
             conditionLabel = new Label
             {
@@ -471,7 +594,7 @@ namespace DualEditorApp
                 ForeColor = Color.White,
                 AutoEllipsis = true
             };
-            
+
             actionLabel = new Label
             {
                 Text = gambit.Description,
@@ -480,7 +603,7 @@ namespace DualEditorApp
                 ForeColor = Color.LightGreen,
                 AutoEllipsis = true
             };
-            
+
             this.Controls.Add(enabledCheck);
             this.Controls.Add(timingLabel);
             this.Controls.Add(conditionLabel);
@@ -499,5 +622,14 @@ namespace DualEditorApp
                 default: return jsonCondition;
             }
         }
+
+        // Add methods to get/set gambit properties
+        public bool IsEnabled => gambit.Enabled;
+        public int ActionId => gambit.ActionId;
+        public string Condition => gambit.Condition;
+        public int Timing => gambit.Timing;
+        public double? Radius => gambit.Radius;
+        public int ActionParam => gambit.ActionParam;
+        public string Description => gambit.Description;
     }
 }

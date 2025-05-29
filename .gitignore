@@ -42,7 +42,7 @@ bld/
 Generated\ Files/
 
 # Template files
-templates/
+templates/notes
 
 # MSTest test Results
 [Tt]est[Rr]esult*/

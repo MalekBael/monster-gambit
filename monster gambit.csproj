@@ -7,10 +7,20 @@
     <RootNamespace>DualEditorApp</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="templates\**" />
+    <EmbeddedResource Remove="templates\**" />
+    <None Remove="templates\**" />
+  </ItemGroup>
+  <ItemGroup>
     <None Include="Properties\Settings.settings">
       <Generator>SettingsSingleFileGenerator</Generator>
       <LastGenOutput>Settings.Designer.cs</LastGenOutput>
     </None>
+    <None Include="templates\notes\GambitPack.cpp" />
+    <None Include="templates\notes\GambitPack.h" />
+    <None Include="templates\notes\GambitRule.cpp" />
+    <None Include="templates\notes\GambitRule.h" />
+    <None Include="templates\notes\GambitTargetCondition.h" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FastColoredTextBox.Net5" Version="2.16.26" />
@@ -27,8 +37,5 @@
       <Generator>ResXFileCodeGenerator</Generator>
       <LastGenOutput>Resource.Designer.cs</LastGenOutput>
     </EmbeddedResource>
-  </ItemGroup>
-  <ItemGroup>
-    <Folder Include="templates\" />
   </ItemGroup>
 </Project>
