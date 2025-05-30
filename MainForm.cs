@@ -14,10 +14,11 @@ namespace DualEditorApp
         private ToolStripMenuItem saveMenuItem;
         private ToolStripMenuItem exportMenuItem;
         private ToolStripButton searchButton;
+        private ToolStripButton bestiaryButton;
 
         private SplitContainer splitContainer;
-        private GambitPanel gambitPanel; // Left panel for settings
-        private FastColoredTextBox editorRight; // Right panel for file display
+        private GambitPanel gambitPanel; 
+        private FastColoredTextBox editorRight;
 
         private OpenFileDialog openFileDialog;
         private SaveFileDialog saveFileDialog;
@@ -55,6 +56,10 @@ namespace DualEditorApp
 
             searchButton = new ToolStripButton("Search", null, SearchButton_Click);
             toolStrip.Items.Add(searchButton);
+
+            // Add bestiary button to toolbar
+            bestiaryButton = new ToolStripButton("Bestiary", null, BestiaryButton_Click);
+            toolStrip.Items.Add(bestiaryButton);
 
             this.Controls.Add(toolStrip);
 
@@ -286,6 +291,13 @@ namespace DualEditorApp
         private void GambitControl_Changed(object sender, EventArgs e)
         {
             gambitPanel.SyncToJson();
+        }
+
+        private void BestiaryButton_Click(object sender, EventArgs e)
+        {
+            // Pass a reference to the main form
+            var bestiaryForm = new BestiaryForm(this);
+            bestiaryForm.Show();
         }
     }
 }

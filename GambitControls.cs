@@ -318,7 +318,7 @@ namespace DualEditorApp
                 Checked = gambit.Enabled,
                 Location = new Point(5, 8),
                 Width = 50,
-                ForeColor = Color.Yellow,
+                ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat
             };
             enabledCheck.CheckedChanged += (s, e) =>

@@ -45,6 +45,7 @@ Generated\ Files/
 templates/notes
 templates
 /templates/
+templates/notes/data_csv/
 
 # MSTest test Results
 [Tt]est[Rr]esult*/
