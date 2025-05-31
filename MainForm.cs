@@ -41,7 +41,21 @@ namespace DualEditorApp
             this.Height = 1000;
             this.StartPosition = FormStartPosition.CenterScreen;
 
-            // ToolStrip
+            // Create a container for all content with proper layout
+            TableLayoutPanel mainContainer = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                RowCount = 2,
+                ColumnCount = 1,
+                RowStyles = {
+            new RowStyle(SizeType.AutoSize), // Row 0: ToolStrip row
+            new RowStyle(SizeType.Percent, 100) // Row 1: Content row (100%)
+        },
+                Padding = new Padding(0),
+                Margin = new Padding(0)
+            };
+
+            // ToolStrip - same as before
             toolStrip = new ToolStrip();
             fileDropDown = new ToolStripDropDownButton("File");
 
@@ -57,31 +71,40 @@ namespace DualEditorApp
             searchButton = new ToolStripButton("Search", null, SearchButton_Click);
             toolStrip.Items.Add(searchButton);
 
-            // Add bestiary button to toolbar
             bestiaryButton = new ToolStripButton("Bestiary", null, BestiaryButton_Click);
             toolStrip.Items.Add(bestiaryButton);
 
-            this.Controls.Add(toolStrip);
+            // Add ToolStrip to the first row
+            Panel toolStripContainer = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(0),
+                Margin = new Padding(0),
+                Height = toolStrip.Height
+            };
+            toolStripContainer.Controls.Add(toolStrip);
+            mainContainer.Controls.Add(toolStripContainer, 0, 0);
 
-            // Split view
+            // Split view in second row
             splitContainer = new SplitContainer
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Vertical,
-                SplitterDistance = this.Width / 2,
-                IsSplitterFixed = true
+                SplitterWidth = 5,
+                IsSplitterFixed = true,
+                Padding = new Padding(0),
+                Margin = new Padding(0)
             };
 
             splitContainer.SplitterMoving += (s, e) => splitContainer.SplitterDistance = splitContainer.Width / 2;
             splitContainer.SplitterMoved += (s, e) => splitContainer.SplitterDistance = splitContainer.Width / 2;
 
-            // Left panel for settings (empty for now)
+            // Add panels to the splitcontainer
             gambitPanel = new GambitPanel(this)
             {
-                Dock = DockStyle.Fill  // Ensure it fills the container
+                Dock = DockStyle.Fill
             };
 
-            // Right editor: FastColoredTextBox
             editorRight = new FastColoredTextBox
             {
                 Dock = DockStyle.Fill,
@@ -99,9 +122,14 @@ namespace DualEditorApp
 
             splitContainer.Panel1.Controls.Add(gambitPanel);
             splitContainer.Panel2.Controls.Add(editorRight);
-            this.Controls.Add(splitContainer);
 
-            // File dialogs
+            // Add splitcontainer to second row of the main container
+            mainContainer.Controls.Add(splitContainer, 0, 1);
+
+            // Add the main container to the form
+            this.Controls.Add(mainContainer);
+
+            // File dialogs (unchanged)
             openFileDialog = new OpenFileDialog
             {
                 Filter = ".cpp /.json Files (*.cpp;*.json)|*.cpp;*.json|C++ Files (*.cpp)|*.cpp|JSON Files (*.json)|*.json|All Files (*.*)|*.*"
@@ -203,7 +231,24 @@ namespace DualEditorApp
 
         private void MainForm_Load(object sender, EventArgs e)
         {
+            // Keep this simple line that works
             splitContainer.SplitterDistance = splitContainer.Width / 2;
+
+            // Safer approach: use BeginInvoke to defer the column adjustment 
+            // until after the main form's layout is complete
+            this.BeginInvoke(new Action(() => {
+                if (gambitPanel != null && gambitPanel.IsHandleCreated)
+                {
+                    try
+                    {
+                        gambitPanel.AdjustColumnWidths();
+                    }
+                    catch
+                    {
+                        // Silently handle any exceptions during layout
+                    }
+                }
+            }));
         }
 
         private void MainForm_Load_1(object sender, EventArgs e)
