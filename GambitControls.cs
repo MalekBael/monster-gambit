@@ -28,6 +28,7 @@ namespace DualEditorApp
         private Dictionary<string, ListViewGroup> monsterGroups = new Dictionary<string, ListViewGroup>();
         private ImageList statusIcons;
         private Dictionary<int, string> actionDisplayMap = new Dictionary<int, string>();
+        private Dictionary<string, Panel> monsterButtonPanels = new Dictionary<string, Panel>();
 
         // Map from condition values to display text
         private readonly Dictionary<string, string> conditionDisplayMap = new Dictionary<string, string>
@@ -211,15 +212,23 @@ namespace DualEditorApp
 
                     if (headerRect.Y >= 0)
                     {
+                        string groupName = e.Item.Group.Header;
+                        
+                        // Draw header background
                         e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb(60, 60, 80)), headerRect);
+                        
+                        // Draw group name
                         using var groupFont = new Font("Segoe UI", 14, FontStyle.Bold);
                         e.Graphics.DrawString(
-                            e.Item.Group.Header,
+                            groupName,
                             groupFont,
                             Brushes.White,
                             headerRect.X + 10,
                             headerRect.Y + 2
                         );
+                        
+                        // Create or position the button panel for this group
+                        PositionButtonPanel(groupName, headerRect);
                     }
                 }
             }
@@ -605,6 +614,13 @@ namespace DualEditorApp
         {
             try
             {
+                // First clean up any existing button panels
+                foreach (var panel in monsterButtonPanels.Values)
+                {
+                    panel.Dispose();
+                }
+                monsterButtonPanels.Clear();
+
                 gambitListView.Items.Clear();
                 gambitListView.Groups.Clear();
                 monsterGroups.Clear();
@@ -626,6 +642,10 @@ namespace DualEditorApp
                     gambitListView.Groups.Add(monsterGroup);
                     monsterGroups[monsterName] = monsterGroup;
 
+                    // Add group header controls
+                    AddGroupHeaderControls(monsterName);
+
+                    // Load gambits for this monster
                     var timeLines = monsterElement.GetProperty("gambitPack").GetProperty("timeLines");
                     foreach (var timeline in timeLines.EnumerateArray())
                     {
@@ -669,6 +689,11 @@ namespace DualEditorApp
             {
                 MessageBox.Show($"Error loading gambits: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+
+        private void AddGroupHeaderControls(string monsterName)
+        {
+            // Nothing needed here anymore - buttons are added in PositionButtonPanel
         }
 
         public void SyncToJson()
@@ -744,6 +769,12 @@ namespace DualEditorApp
 
         public void ClearGambits()
         {
+            foreach (var panel in monsterButtonPanels.Values)
+            {
+                panel.Dispose();
+            }
+            monsterButtonPanels.Clear();
+            
             gambitListView.Items.Clear();
             gambitListView.Groups.Clear();
             monsterGroups.Clear();
@@ -765,6 +796,124 @@ namespace DualEditorApp
                     listView.BeginInvoke(new Action(() => listView.Refresh()));
                 return false;
             }
+        }
+
+        private void AddNewGambit(string groupName)
+        {
+            // Create a new default gambit
+            var newGambit = new Gambit
+            {
+                Condition = "None",
+                ActionId = 0,
+                Timing = 0,
+                Description = "New Action",
+                ActionParam = 0,
+                Enabled = true
+            };
+            
+            gambits.Add(newGambit);
+            
+            // Create and add a new item to the ListView
+            var item = new ListViewItem(new[] {
+                "ON",
+                "0",
+                "No target",
+                "New Action"
+            });
+            
+            item.ImageIndex = 0; // Enabled icon
+            item.Tag = newGambit;
+            item.Group = monsterGroups[groupName];
+            gambitListView.Items.Add(item);
+            
+            // Update the JSON
+            SyncToJson();
+        }
+
+        private void DeleteDisabledGambits(string groupName)
+        {
+            // Make a separate list to avoid modifying collection during enumeration
+            var itemsToRemove = new List<ListViewItem>();
+            var gambitsToRemove = new List<Gambit>();
+            
+            foreach (ListViewItem item in gambitListView.Items)
+            {
+                if (item.Group?.Header == groupName && item.Tag is Gambit gambit && !gambit.Enabled)
+                {
+                    itemsToRemove.Add(item);
+                    gambitsToRemove.Add(gambit);
+                }
+            }
+            
+            // Remove items if any were found
+            if (itemsToRemove.Count > 0)
+            {
+                foreach (var item in itemsToRemove)
+                {
+                    gambitListView.Items.Remove(item);
+                }
+                
+                foreach (var gambit in gambitsToRemove)
+                {
+                    gambits.Remove(gambit);
+                }
+                
+                SyncToJson();
+                gambitListView.Invalidate();
+            }
+        }
+
+        private void PositionButtonPanel(string groupName, Rectangle headerRect)
+        {
+            if (!monsterButtonPanels.TryGetValue(groupName, out var buttonPanel))
+            {
+                // Create new button panel if it doesn't exist
+                buttonPanel = new Panel
+                {
+                    BackColor = Color.Transparent,
+                    Size = new Size(100, 24),
+                    Parent = gambitListView
+                };
+                
+                // Add New button
+                var addButton = new Button
+                {
+                    Text = "+",
+                    Size = new Size(30, 20),
+                    Location = new Point(0, 2),
+                    BackColor = Color.FromArgb(80, 120, 80),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Arial", 8, FontStyle.Bold),
+                    Cursor = Cursors.Hand
+                };
+                addButton.FlatAppearance.BorderSize = 0;
+                addButton.Click += (s, e) => AddNewGambit(groupName);
+                buttonPanel.Controls.Add(addButton);
+                
+                // Add Delete button
+                var deleteButton = new Button
+                {
+                    Text = "×",
+                    Size = new Size(30, 20),
+                    Location = new Point(40, 2),
+                    BackColor = Color.FromArgb(120, 80, 80),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Arial", 8, FontStyle.Bold),
+                    Cursor = Cursors.Hand
+                };
+                deleteButton.FlatAppearance.BorderSize = 0;
+                deleteButton.Click += (s, e) => DeleteDisabledGambits(groupName);
+                buttonPanel.Controls.Add(deleteButton);
+                
+                monsterButtonPanels[groupName] = buttonPanel;
+            }
+            
+            // Position the button panel in the header
+            buttonPanel.Location = new Point(headerRect.Right - 100, headerRect.Y + 3);
+            buttonPanel.BringToFront();
+            buttonPanel.Visible = true;
         }
     }
 }
