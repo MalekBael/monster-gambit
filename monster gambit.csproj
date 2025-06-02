@@ -30,6 +30,9 @@
     </EmbeddedResource>
   </ItemGroup>
   <ItemGroup>
+    <None Update="resources\ActionNames.csv">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
     <None Update="resources\MonsterData.csv">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>

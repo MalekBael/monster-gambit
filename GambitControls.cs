@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Windows.Forms;
@@ -25,6 +27,7 @@ namespace DualEditorApp
         private MainForm parentForm;
         private Dictionary<string, ListViewGroup> monsterGroups = new Dictionary<string, ListViewGroup>();
         private ImageList statusIcons;
+        private Dictionary<int, string> actionDisplayMap = new Dictionary<int, string>();
 
         // Map from condition values to display text
         private readonly Dictionary<string, string> conditionDisplayMap = new Dictionary<string, string>
@@ -46,6 +49,9 @@ namespace DualEditorApp
             BackColor = Color.FromArgb(40, 40, 40);
             Dock = DockStyle.Fill;
 
+            // Load action data from CSV
+            LoadActionData();
+
             // Create layout with header and content
             var layoutPanel = CreateLayoutPanel();
 
@@ -57,6 +63,34 @@ namespace DualEditorApp
             layoutPanel.Controls.Add(gambitListView, 0, 1);
 
             Controls.Add(layoutPanel);
+        }
+
+        private void LoadActionData()
+        {
+            try
+            {
+                string actionCsvPath = Path.Combine(Application.StartupPath, "resources", "ActionNames.csv");
+                if (File.Exists(actionCsvPath))
+                {
+                    // Skip the header line and read the rest
+                    var lines = File.ReadAllLines(actionCsvPath).Skip(1);
+                    
+                    foreach (string line in lines)
+                    {
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+                        
+                        string[] parts = line.Split(',');
+                        if (parts.Length >= 2 && int.TryParse(parts[0], out int actionId) && !string.IsNullOrWhiteSpace(parts[1]))
+                        {
+                            actionDisplayMap[actionId] = parts[1];
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error loading action data: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private TableLayoutPanel CreateLayoutPanel()
@@ -275,6 +309,10 @@ namespace DualEditorApp
             {
                 ShowTimingEditor(item, hitInfo.SubItem.Bounds);
             }
+            else if (hitInfo.SubItem == item.SubItems[3])
+            {
+                ShowActionDropdown(item, hitInfo.SubItem.Bounds);
+            }
         }
 
         private void ShowTimingEditor(ListViewItem item, Rectangle bounds)
@@ -282,35 +320,64 @@ namespace DualEditorApp
             var gambit = item.Tag as Gambit;
             if (gambit == null) return;
 
-            var timingEditor = new NumericUpDown
+            // Use a regular TextBox instead of NumericUpDown to remove arrows
+            var timingEditor = new TextBox
             {
                 Location = bounds.Location,
                 Width = bounds.Width,
                 Height = bounds.Height,
-                Minimum = 0,
-                Maximum = 999,
-                Value = gambit.Timing,
+                Text = gambit.Timing.ToString(),
                 BackColor = Color.FromArgb(60, 60, 60),
-                ForeColor = Color.White
+                ForeColor = Color.White,
+                TextAlign = HorizontalAlignment.Center
             };
 
-            timingEditor.ValueChanged += (s, e) => {
-                gambit.Timing = (int)timingEditor.Value;
-                item.SubItems[1].Text = timingEditor.Value.ToString();
+            // Select all text for easy replacement
+            timingEditor.SelectAll();
+
+            // Validate input to ensure only numbers are entered
+            timingEditor.KeyPress += (s, e) => {
+                // Allow digits, backspace, and delete
+                if (!char.IsDigit(e.KeyChar) && e.KeyChar != 8 && e.KeyChar != 127)
+                {
+                    e.Handled = true;
+                }
             };
 
             timingEditor.KeyDown += (s, e) => {
                 if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Return)
                 {
+                    SaveTimingValue();
+                }
+                else if (e.KeyCode == Keys.Escape)
+                {
                     gambitListView.Controls.Remove(timingEditor);
-                    SyncToJson();
                 }
             };
 
             timingEditor.LostFocus += (s, e) => {
-                gambitListView.Controls.Remove(timingEditor);
-                SyncToJson();
+                SaveTimingValue();
             };
+
+            void SaveTimingValue()
+            {
+                if (int.TryParse(timingEditor.Text, out int value))
+                {
+                    // Enforce value constraints
+                    value = Math.Max(0, Math.Min(999, value));
+                    
+                    gambit.Timing = value;
+                    item.SubItems[1].Text = value.ToString();
+                    gambitListView.Controls.Remove(timingEditor);
+                    SyncToJson();
+                }
+                else
+                {
+                    // Revert to original value if parsing fails
+                    timingEditor.Text = gambit.Timing.ToString();
+                    timingEditor.SelectAll();
+                }
+            }
 
             gambitListView.Controls.Add(timingEditor);
             timingEditor.Focus();
@@ -350,6 +417,178 @@ namespace DualEditorApp
             gambitListView.Controls.Add(dropdown);
             dropdown.Focus();
             dropdown.DroppedDown = true;
+        }
+
+        private void ShowActionDropdown(ListViewItem item, Rectangle bounds)
+        {
+            var gambit = item.Tag as Gambit;
+            if (gambit == null) return;
+
+            // Create a custom ComboBox with better search handling
+            var dropdown = new ComboBox
+            {
+                Location = bounds.Location,
+                Width = bounds.Width,
+                Height = bounds.Height,
+                DropDownStyle = ComboBoxStyle.DropDown,
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = Color.White,
+                Cursor = Cursors.Default // Explicitly set cursor
+            };
+
+            // Flag to prevent recursive TextChanged events
+            bool updatingItems = false;
+            
+            // Use a timer to debounce text changes and help prevent cursor issues
+            var filterTimer = new Timer { Interval = 150 };
+            filterTimer.Tick += (s, e) => {
+                filterTimer.Stop();
+                if (dropdown.IsDisposed) return;
+                
+                try {
+                    updatingItems = true;
+                    string searchText = dropdown.Text.ToLower();
+                    
+                    // Filter actions by ID or name
+                    var filteredItems = actionDisplayMap.OrderBy(a => a.Key)
+                        .Where(a => a.Key.ToString().Contains(searchText) || 
+                                   a.Value.ToLower().Contains(searchText))
+                        .Select(a => new ActionItem(a.Key, a.Value))
+                        .ToArray();
+                        
+                    // Save current state
+                    int selectionStart = dropdown.SelectionStart;
+                    string currentText = dropdown.Text;
+                    
+                    // Suppress flicker
+                    dropdown.BeginUpdate();
+                    
+                    // Update items
+                    dropdown.Items.Clear();
+                    dropdown.Items.AddRange(filteredItems);
+                    
+                    // Restore state
+                    dropdown.Text = currentText;
+                    dropdown.SelectionStart = selectionStart;
+                    
+                    dropdown.EndUpdate();
+                    
+                    // Ensure dropdown stays open
+                    if (filteredItems.Length > 0) {
+                        dropdown.DroppedDown = true;
+                        Cursor.Current = Cursors.Default; // Force cursor to remain visible
+                    }
+                }
+                finally {
+                    updatingItems = false;
+                }
+            };
+
+            // Create a list of all actions for initial load
+            var allActions = actionDisplayMap.OrderBy(a => a.Key)
+                .Select(a => new ActionItem(a.Key, a.Value))
+                .ToArray();
+
+            // Initialize dropdown
+            dropdown.Items.AddRange(allActions);
+
+            // Select the current action if it exists
+            if (actionDisplayMap.TryGetValue(gambit.ActionId, out string actionName))
+            {
+                for (int i = 0; i < dropdown.Items.Count; i++)
+                {
+                    if (((ActionItem)dropdown.Items[i]).Id == gambit.ActionId)
+                    {
+                        dropdown.SelectedIndex = i;
+                        dropdown.Text = dropdown.Items[i].ToString();
+                        break;
+                    }
+                }
+            }
+
+            // Use timer to debounce text changes
+            dropdown.TextChanged += (s, e) => {
+                if (updatingItems) return;
+                filterTimer.Stop();
+                filterTimer.Start();
+            };
+
+            dropdown.SelectionChangeCommitted += (s, e) => {
+                if (dropdown.SelectedItem is ActionItem selectedAction)
+                {
+                    gambit.ActionId = selectedAction.Id;
+                    gambit.Description = selectedAction.Name;
+                    item.SubItems[3].Text = selectedAction.Name;
+                    
+                    // Clean up resources
+                    filterTimer.Stop();
+                    filterTimer.Dispose();
+                    
+                    gambitListView.Controls.Remove(dropdown);
+                    SyncToJson();
+                }
+            };
+
+            dropdown.LostFocus += (s, e) => {
+                // Only remove if not actively selecting from dropdown
+                if (!dropdown.DroppedDown) {
+                    filterTimer.Stop();
+                    filterTimer.Dispose();
+                    gambitListView.Controls.Remove(dropdown);
+                }
+            };
+
+            dropdown.KeyDown += (s, e) => {
+                if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Return)
+                {
+                    if (dropdown.SelectedItem is ActionItem selectedAction)
+                    {
+                        gambit.ActionId = selectedAction.Id;
+                        gambit.Description = selectedAction.Name;
+                        item.SubItems[3].Text = selectedAction.Name;
+                    }
+                    else if (dropdown.Items.Count > 0)
+                    {
+                        // Select first item if nothing specifically selected
+                        var firstAction = (ActionItem)dropdown.Items[0];
+                        gambit.ActionId = firstAction.Id;
+                        gambit.Description = firstAction.Name;
+                        item.SubItems[3].Text = firstAction.Name;
+                    }
+                    
+                    // Clean up
+                    filterTimer.Stop();
+                    filterTimer.Dispose();
+                    gambitListView.Controls.Remove(dropdown);
+                    SyncToJson();
+                }
+                else if (e.KeyCode == Keys.Escape)
+                {
+                    filterTimer.Stop();
+                    filterTimer.Dispose();
+                    gambitListView.Controls.Remove(dropdown);
+                }
+            };
+
+            gambitListView.Controls.Add(dropdown);
+            dropdown.Focus();
+            dropdown.DroppedDown = true;
+            Cursor.Current = Cursors.Default; // Ensure cursor is visible initially
+        }
+
+        // Helper class for dropdown items
+        private class ActionItem
+        {
+            public int Id { get; }
+            public string Name { get; }
+
+            public ActionItem(int id, string name)
+            {
+                Id = id;
+                Name = name;
+            }
+
+            public override string ToString() => $"{Id}: {Name}";
         }
 
         private string MapConditionToDisplay(string condition) =>
