@@ -33,6 +33,10 @@ namespace DualEditorApp
         private FastColoredTextBoxNS.Range highlightedRange; // Fully qualify Range
         private bool highlightingSuspended = false;
 
+        // Add these field declarations for line-based highlighting
+        private int highlightedStartLine = -1;
+        private int highlightedEndLine = -1;
+
         public MainForm()
         {
             InitializeComponent();
@@ -40,7 +44,10 @@ namespace DualEditorApp
             this.Load += MainForm_Load;
 
             // Initialize highlight style - light blue background
-            highlightStyle = new TextStyle(Brushes.Black, new SolidBrush(Color.FromArgb(180, 200, 240)), FontStyle.Regular);
+            highlightStyle = new TextStyle(null, new SolidBrush(Color.FromArgb(30, 100, 180, 255)), FontStyle.Regular);
+            
+            // Add handler for line painting to create a more visible highlight
+            editorRight.PaintLine += EditorRight_PaintLine;
         }
 
         private void SetupUI()
@@ -370,6 +377,8 @@ namespace DualEditorApp
             if (highlightedRange != null)
             {
                 highlightedRange.ClearStyle(highlightStyle);
+                highlightedStartLine = -1;
+                highlightedEndLine = -1;
                 editorRight.Invalidate();
                 highlightedRange = null;
             }
@@ -388,14 +397,18 @@ namespace DualEditorApp
                 var startPlace = editorRight.PositionToPlace(startPos);
                 var endPlace = editorRight.PositionToPlace(endPos);
                 
-                // Create a new range for the section using Place objects
+                // Store line range for the PaintLine handler
+                highlightedStartLine = startPlace.iLine;
+                highlightedEndLine = endPlace.iLine;
+                
+                // Create a range for the section
                 highlightedRange = new FastColoredTextBoxNS.Range(editorRight, startPlace, endPlace);
                 
-                // Apply the highlighting style
+                // Apply subtle text highlighting (optional)
                 highlightedRange.SetStyle(highlightStyle);
                 
                 // Scroll to make the section visible
-                editorRight.DoRangeVisible(highlightedRange);
+                editorRight.DoRangeVisible(highlightedRange, true);
                 
                 // Refresh the editor
                 editorRight.Invalidate();
@@ -403,6 +416,27 @@ namespace DualEditorApp
             catch (Exception ex)
             {
                 Console.WriteLine($"Error highlighting JSON section: {ex.Message}");
+            }
+        }
+
+        // Add this method to draw line markers
+        private void EditorRight_PaintLine(object sender, PaintLineEventArgs e)
+        {
+            // If we have valid highlight lines and this line is within that range
+            if (highlightedStartLine >= 0 && highlightedEndLine >= 0 && 
+                e.LineIndex >= highlightedStartLine && e.LineIndex <= highlightedEndLine)
+            {
+                // Draw a colored background for the whole line
+                e.Graphics.FillRectangle(
+                    new SolidBrush(Color.FromArgb(40, 100, 180, 255)), 
+                    e.LineRect
+                );
+                
+                // Add a distinctive marker in the left margin for better visibility
+                e.Graphics.FillRectangle(
+                    new SolidBrush(Color.FromArgb(200, 100, 150, 250)),
+                    new Rectangle(0, e.LineRect.Top, 5, e.LineRect.Height)
+                );
             }
         }
     }

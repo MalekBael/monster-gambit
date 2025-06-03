@@ -52,7 +52,6 @@ namespace DualEditorApp
         private Button deleteDisabledButton;
         private string currentMonsterSelection;
         private ComboBox monsterSelector;
-        private ComboBox packTypeSelector;
         private NumericUpDown loopCountEditor;
         private CheckBox infiniteLoopCheckbox;
         private Panel extraParamsPanel;
@@ -62,7 +61,6 @@ namespace DualEditorApp
         // Add these field declarations to the GambitPanel class, not the Gambit class
         private TextBox baseIdEditor;
         private TextBox nameIdEditor;
-        private Panel monsterPropertiesPanel;
 
         // Map from condition values to display text
         private readonly Dictionary<string, string> conditionDisplayMap = new Dictionary<string, string>
@@ -1816,7 +1814,7 @@ namespace DualEditorApp
 
             // Reset pack type to default
             currentPackType = GambitPackType.TimeLine;
-            packTypeSelector.SelectedIndex = 0;
+            //packTypeSelector.SelectedIndex = 0;
 
             // Reset loop values
             loopCount = 1;
