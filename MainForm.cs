@@ -3,6 +3,7 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
+using System.Threading.Tasks;
 
 namespace DualEditorApp
 {
@@ -27,11 +28,19 @@ namespace DualEditorApp
         private int lastSearchIndex = -1;
         private string lastSearchText = "";
 
+        // Fields to track current highlighting
+        private TextStyle highlightStyle;
+        private FastColoredTextBoxNS.Range highlightedRange; // Fully qualify Range
+        private bool highlightingSuspended = false;
+
         public MainForm()
         {
             InitializeComponent();
             SetupUI();
             this.Load += MainForm_Load;
+
+            // Initialize highlight style - light blue background
+            highlightStyle = new TextStyle(Brushes.Black, new SolidBrush(Color.FromArgb(180, 200, 240)), FontStyle.Regular);
         }
 
         private void SetupUI()
@@ -343,6 +352,58 @@ namespace DualEditorApp
             // Pass a reference to the main form
             var bestiaryForm = new BestiaryForm(this);
             bestiaryForm.Show();
+        }
+
+        public void SuspendHighlighting()
+        {
+            highlightingSuspended = true;
+            ClearHighlighting();
+        }
+
+        public void ResumeHighlighting()
+        {
+            highlightingSuspended = false;
+        }
+
+        private void ClearHighlighting()
+        {
+            if (highlightedRange != null)
+            {
+                highlightedRange.ClearStyle(highlightStyle);
+                editorRight.Invalidate();
+                highlightedRange = null;
+            }
+        }
+
+        public void HighlightJsonSection(int startPos, int endPos)
+        {
+            if (highlightingSuspended) return;
+            
+            try
+            {
+                // Clear previous highlighting
+                ClearHighlighting();
+                
+                // Convert positions to Place objects
+                var startPlace = editorRight.PositionToPlace(startPos);
+                var endPlace = editorRight.PositionToPlace(endPos);
+                
+                // Create a new range for the section using Place objects
+                highlightedRange = new FastColoredTextBoxNS.Range(editorRight, startPlace, endPlace);
+                
+                // Apply the highlighting style
+                highlightedRange.SetStyle(highlightStyle);
+                
+                // Scroll to make the section visible
+                editorRight.DoRangeVisible(highlightedRange);
+                
+                // Refresh the editor
+                editorRight.Invalidate();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error highlighting JSON section: {ex.Message}");
+            }
         }
     }
 }
