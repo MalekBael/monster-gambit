@@ -10,15 +10,26 @@ using System.Runtime.InteropServices;
 
 namespace DualEditorApp
 {
+    // Define pack types matching the C++ implementation
+    public enum GambitPackType
+    {
+        TimeLine,
+        RuleSet
+    }
+
     public class Gambit
     {
         public string Condition { get; set; }
         public int ActionId { get; set; }
         public int ActionParam { get; set; }
-        public int Timing { get; set; }
+        public int Timing { get; set; } // Used for TimeLine packs
+        public uint CoolDown { get; set; } = 0; // Used for RuleSet packs (milliseconds)
         public string Description { get; set; }
         public double? Radius { get; set; }
         public bool Enabled { get; set; } = true;
+        public uint HPThreshold { get; set; } = 0; // Used for HP conditions
+        public double AttackRange { get; set; } = 0; // New property
+        public bool IsRanged { get; set; } = false; // New property
     }
 
     public class GambitPanel : Panel
@@ -30,14 +41,26 @@ namespace DualEditorApp
         private ImageList statusIcons;
         private Dictionary<int, string> actionDisplayMap = new Dictionary<int, string>();
 
-        // Add a panel to show actions for the currently selected monster
+        // GambitPack configuration
+        private GambitPackType currentPackType = GambitPackType.TimeLine;
+        private int loopCount = 1; // Default: run once
+        private bool infiniteLoop = false;
+
+        // UI controls
         private Panel monsterActionsPanel;
         private Button addGambitButton;
         private Button deleteDisabledButton;
         private string currentMonsterSelection;
-
-        // Add this field to the class
         private ComboBox monsterSelector;
+        private NumericUpDown loopCountEditor;
+        private CheckBox infiniteLoopCheckbox;
+        private Panel extraParamsPanel;
+        private NumericUpDown attackRangeEditor; // New control
+        private CheckBox isRangedCheckbox; // New control
+
+        // Add these field declarations to the GambitPanel class, not the Gambit class
+        private TextBox baseIdEditor;
+        private TextBox nameIdEditor;
 
         // Map from condition values to display text
         private readonly Dictionary<string, string> conditionDisplayMap = new Dictionary<string, string>
@@ -59,28 +82,18 @@ namespace DualEditorApp
             BackColor = Color.FromArgb(40, 40, 40);
             Dock = DockStyle.Fill;
 
-            // Load action data from CSV
             LoadActionData();
 
-            // Create layout with header, action panel and content
             var layoutPanel = CreateLayoutPanel();
-
-            // Create header
             layoutPanel.Controls.Add(CreateHeaderPanel(), 0, 0);
-
-            // Create monster action panel (new)
             layoutPanel.Controls.Add(CreateMonsterActionsPanel(), 0, 1);
-
-            // Create ListView (now in row 2 instead of 1)
+            layoutPanel.Controls.Add(CreateMonsterPropertiesPanel(), 0, 2);
+            layoutPanel.Controls.Add(CreateGambitPackSettingsPanel(), 0, 3); // New panel for pack settings
             gambitListView = CreateGambitListView();
-            layoutPanel.Controls.Add(gambitListView, 0, 2);
-
+            layoutPanel.Controls.Add(gambitListView, 0, 4);
             Controls.Add(layoutPanel);
-            
-            // Add a panel-wide click handler to deselect rows
+
             this.Click += Panel_Click;
-            
-            // Add keyboard handler for Escape key
             gambitListView.KeyDown += (s, e) => {
                 if (e.KeyCode == Keys.Escape)
                 {
@@ -88,9 +101,7 @@ namespace DualEditorApp
                 }
             };
 
-            // Handle panel initialization
             this.HandleCreated += (s, e) => {
-                // Force refresh on load
                 gambitListView.Refresh();
             };
         }
@@ -121,22 +132,6 @@ namespace DualEditorApp
             {
                 MessageBox.Show($"Error loading action data: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
-        }
-
-        private TableLayoutPanel CreateLayoutPanel()
-        {
-            var layout = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                RowCount = 3, // Increased to 3 rows to accommodate action panel
-                ColumnCount = 1,
-                Padding = Margin = new Padding(0),
-                BackColor = Color.FromArgb(40, 40, 40)
-            };
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Header
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Monster actions panel
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F)); // ListView
-            return layout;
         }
 
         private Panel CreateHeaderPanel()
@@ -213,7 +208,7 @@ namespace DualEditorApp
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 FlatStyle = FlatStyle.Flat
             };
-            
+
             monsterSelector.SelectedIndexChanged += (s, e) => {
                 if (monsterSelector.SelectedItem is MonsterItem monster)
                 {
@@ -221,10 +216,16 @@ namespace DualEditorApp
                     currentMonsterSelection = monster.OriginalName;
                     addGambitButton.Enabled = true;
                     deleteDisabledButton.Enabled = true;
-                    
+
                     // Deselect any items in the list
                     foreach (ListViewItem item in gambitListView.Items)
                         item.Selected = false;
+                        
+                    // Update the attack range and isRanged controls for the selected monster
+                    UpdateMonsterPropertyControls(monster.OriginalName);
+                    
+                    // Highlight the monster section in the JSON editor
+                    HighlightMonsterInJson(monster.OriginalName);
                 }
             };
             monsterActionsPanel.Controls.Add(monsterSelector);
@@ -240,7 +241,7 @@ namespace DualEditorApp
                 BackColor = Color.Transparent
             };
 
-            // Create buttons for actions (now in the button panel)
+            // Create buttons for actions
             addGambitButton = new Button
             {
                 Text = "Add Gambit",
@@ -257,7 +258,7 @@ namespace DualEditorApp
                 if (!string.IsNullOrEmpty(currentMonsterSelection))
                     AddNewGambit(currentMonsterSelection);
             };
-            
+
             deleteDisabledButton = new Button
             {
                 Text = "Delete Disabled",
@@ -275,13 +276,13 @@ namespace DualEditorApp
                     DeleteDisabledGambits(currentMonsterSelection);
             };
 
-            // Add buttons to panel in right-to-left order
+            // Add buttons to panel
             buttonPanel.Controls.Add(deleteDisabledButton, 1, 0);
             buttonPanel.Controls.Add(addGambitButton, 0, 0);
-            
+
             monsterActionsPanel.Controls.Add(buttonPanel);
 
-            // Add click handler to the monster action panel
+            // Add click handler
             monsterActionsPanel.Click += (s, e) => {
                 DeselectAllItems();
             };
@@ -289,94 +290,233 @@ namespace DualEditorApp
             return monsterActionsPanel;
         }
 
-        private void ListViewItemSelectionHandler(object sender, MouseEventArgs e)
+        // Create a panel for pack type and settings
+        private Panel CreateGambitPackSettingsPanel()
         {
-            // First check if we're clicking in a header area
-            foreach (ListViewGroup group in gambitListView.Groups)
+            var panel = new Panel
             {
-                ListViewItem firstGroupItem = null;
-                
-                // Find first item in this group
-                foreach (ListViewItem item in group.Items)
+                Dock = DockStyle.Fill,
+                Height = 40,
+                BackColor = Color.FromArgb(45, 45, 55),
+                Padding = new Padding(5),
+            };
+
+            // Attack Range Label
+            var rangeLabel = new Label
+            {
+                Text = "Attack Range:",
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(10, 12),
+            };
+            panel.Controls.Add(rangeLabel);
+
+            // Attack Range Editor
+            var rangeEditor = new NumericUpDown
+            {
+                Location = new Point(95, 10),
+                Width = 60,
+                Minimum = 0,
+                Maximum = 50,
+                DecimalPlaces = 1,
+                Increment = 0.5m,
+                Value = 0,
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = Color.White
+            };
+            rangeEditor.ValueChanged += (s, e) => {
+                if (currentMonsterSelection != null)
                 {
-                    firstGroupItem = item;
-                    break;
-                }
-                
-                if (firstGroupItem != null)
-                {
-                    // Calculate where the header would be
-                    int headerTop = firstGroupItem.Bounds.Top - 28;
-                    if (headerTop >= 0)
+                    // Update all gambits for the current monster
+                    foreach (ListViewItem item in gambitListView.Items)
                     {
-                        var headerRect = new Rectangle(
-                            0, headerTop, gambitListView.Width, 28);
-                        
-                        if (headerRect.Contains(e.Location))
+                        if (item.Group?.Header == currentMonsterSelection && item.Tag is Gambit gambit)
                         {
-                            // If we clicked on a header, update dropdown but prevent item selection
-                            // Find the corresponding monster in the dropdown
-                            for (int i = 0; i < monsterSelector.Items.Count; i++)
-                            {
-                                if (monsterSelector.Items[i] is MonsterItem monster && 
-                                    monster.OriginalName == group.Header)
-                                {
-                                    monsterSelector.SelectedIndex = i;
-                                    break;
-                                }
-                            }
-                            
-                            // Cancel the default selection behavior
-                            return;
+                            gambit.AttackRange = (double)rangeEditor.Value;
                         }
                     }
+                    SyncToJson();
                 }
-            }
-            
-            // If not a header click, proceed with normal selection behavior
-            var hitInfo = gambitListView.HitTest(e.X, e.Y);
-            
-            if (hitInfo.Item != null)
+            };
+            panel.Controls.Add(rangeEditor);
+
+            // Is Ranged Checkbox
+            var rangedCheckbox = new CheckBox  // Renamed from isRangedCheckbox to rangedCheckbox
             {
-                // Check if we're clicking on an already selected item
-                if (hitInfo.Item.Selected)
+                Text = "Is Ranged",
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                Location = new Point(170, 11),
+                AutoSize = true
+            };
+            rangedCheckbox.CheckedChanged += (s, e) => {
+                if (currentMonsterSelection != null)
                 {
-                    // Deselect if already selected
-                    hitInfo.Item.Selected = false;
-                    return;
-                }
-                
-                // Otherwise, select this item and deselect others
-                foreach (ListViewItem item in gambitListView.Items)
-                {
-                    item.Selected = (item == hitInfo.Item);
-                }
-                
-                // Update dropdown to match the group
-                if (hitInfo.Item.Group != null)
-                {
-                    string groupName = hitInfo.Item.Group.Header;
-                    
-                    // Find and select the appropriate item in the dropdown
-                    for (int i = 0; i < monsterSelector.Items.Count; i++)
+                    // Update all gambits for the current monster
+                    foreach (ListViewItem item in gambitListView.Items)
                     {
-                        if (monsterSelector.Items[i] is MonsterItem monster && 
-                            monster.OriginalName == groupName)
+                        if (item.Group?.Header == currentMonsterSelection && item.Tag is Gambit gambit)
                         {
-                            monsterSelector.SelectedIndex = i;
-                            break;
+                            gambit.IsRanged = rangedCheckbox.Checked;  // Use renamed variable
                         }
                     }
+                    SyncToJson();
                 }
-            }
-            else
+            };
+            panel.Controls.Add(rangedCheckbox);
+
+            // Store these controls as class members to access them elsewhere
+            attackRangeEditor = rangeEditor;
+            isRangedCheckbox = rangedCheckbox;  // Now correctly assigns local variable to class member
+
+            // Loop count elements for the TimeLine functionality
+            var loopPanel = new Panel
             {
-                // Clicked in empty space - deselect all items
-                foreach (ListViewItem item in gambitListView.Items)
+                Location = new Point(290, 0),
+                Width = 250,
+                Height = panel.Height,
+                BackColor = Color.Transparent
+            };
+
+            var loopLabel = new Label
+            {
+                Text = "Loop Count:",
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(5, 12)
+            };
+            loopPanel.Controls.Add(loopLabel);
+
+            loopCountEditor = new NumericUpDown
+            {
+                Location = new Point(85, 10),
+                Width = 60,
+                Minimum = 1,
+                Maximum = 100,
+                Value = 1,
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = Color.White
+            };
+            loopCountEditor.ValueChanged += (s, e) => {
+                loopCount = (int)loopCountEditor.Value;
+                SyncToJson();
+            };
+            loopPanel.Controls.Add(loopCountEditor);
+
+            infiniteLoopCheckbox = new CheckBox
+            {
+                Text = "Infinite Loop",
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                Location = new Point(155, 11),
+                AutoSize = true
+            };
+            infiniteLoopCheckbox.CheckedChanged += (s, e) => {
+                infiniteLoop = infiniteLoopCheckbox.Checked;
+                loopCountEditor.Enabled = !infiniteLoop;
+                SyncToJson();
+            };
+            loopPanel.Controls.Add(infiniteLoopCheckbox);
+
+            panel.Controls.Add(loopPanel);
+            extraParamsPanel = loopPanel;
+
+            return panel;
+        }
+
+        // Create a new method in the GambitPanel class for the monster properties panel
+        private Panel CreateMonsterPropertiesPanel()
+        {
+            var panel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Height = 40,
+                BackColor = Color.FromArgb(45, 45, 55),
+                Padding = new Padding(5),
+            };
+
+            // Base ID Label
+            var baseIdLabel = new Label
+            {
+                Text = "Base ID:",
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(10, 12),
+            };
+            panel.Controls.Add(baseIdLabel);
+
+            // Base ID Editor
+            baseIdEditor = new TextBox
+            {
+                Location = new Point(95, 10),
+                Width = 60,
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = Color.White,
+                TextAlign = HorizontalAlignment.Center
+            };
+            baseIdEditor.TextChanged += (s, e) => {
+                if (currentMonsterSelection != null && int.TryParse(baseIdEditor.Text, out int baseId))
                 {
-                    item.Selected = false;
+                    SyncToJson();
                 }
-            }
+            };
+            baseIdEditor.KeyDown += (s, e) => {
+                if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Escape)
+                {
+                    // Move focus to the panel on Enter or Escape
+                    panel.Focus();
+                    e.Handled = true;
+                    e.SuppressKeyPress = true;
+                }
+            };
+            panel.Controls.Add(baseIdEditor);
+
+            // Name ID Label
+            var nameIdLabel = new Label
+            {
+                Text = "Name ID:",
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(180, 12),
+            };
+            panel.Controls.Add(nameIdLabel);
+
+            // Name ID Editor
+            nameIdEditor = new TextBox
+            {
+                Location = new Point(265, 10),
+                Width = 60,
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = Color.White,
+                TextAlign = HorizontalAlignment.Center
+            };
+            nameIdEditor.TextChanged += (s, e) => {
+                if (currentMonsterSelection != null && int.TryParse(nameIdEditor.Text, out int nameId))
+                {
+                    SyncToJson();
+                }
+            };
+            nameIdEditor.KeyDown += (s, e) => {
+                if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Escape)
+                {
+                    // Move focus to the panel on Enter or Escape
+                    panel.Focus();
+                    e.Handled = true;
+                    e.SuppressKeyPress = true;
+                }
+            };
+            panel.Controls.Add(nameIdEditor);
+
+            // Add click handler to panel to deselect text fields
+            panel.Click += (s, e) => {
+                panel.Focus();
+            };
+
+            return panel;
         }
 
         private ListView CreateGambitListView()
@@ -412,7 +552,7 @@ namespace DualEditorApp
             // Set up event handlers
             listView.DrawItem += (s, e) =>
             {
-                // First, check if this is a group header and draw it nicely
+                // Draw group header
                 bool shouldDrawHeader = false;
                 if (e.ItemIndex == 0) shouldDrawHeader = true;
                 else if (e.ItemIndex > 0 && e.ItemIndex < listView.Items.Count)
@@ -429,13 +569,12 @@ namespace DualEditorApp
                     if (headerRect.Y >= 0)
                     {
                         string groupName = e.Item.Group.Header;
-                        // Format the displayed name but keep original in Group.Header
                         string displayName = FormatMonsterName(groupName);
 
                         // Draw header background
                         e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb(60, 60, 80)), headerRect);
 
-                        // Draw formatted group name with larger white font
+                        // Draw formatted group name
                         using var groupFont = new Font("Segoe UI", 14, FontStyle.Bold);
                         e.Graphics.DrawString(
                             displayName,
@@ -447,25 +586,15 @@ namespace DualEditorApp
                     }
                 }
 
-                // Handle alternating row colors
+                // Use consistent grey color for all rows
                 if (e.Item?.Group != null)
                 {
-                    // Get index in group for proper alternating colors
-                    int index = 0;
-                    foreach (ListViewItem item in e.Item.Group.Items)
-                    {
-                        if (item == e.Item) break;
-                        index++;
-                    }
-
-                    // Set color based on even/odd position in group
-                    e.Item.BackColor = index % 2 == 0
-                        ? Color.FromArgb(45, 45, 45)
-                        : Color.FromArgb(55, 55, 55);
+                    e.Item.BackColor = Color.FromArgb(55, 55, 55);
                 }
 
                 e.DrawDefault = true;
             };
+
             listView.DrawColumnHeader += (s, e) => DrawColumnHeader(e);
             listView.MouseClick += GambitListView_MouseClick;
             listView.ColumnWidthChanging += (s, e) => { e.Cancel = true; e.NewWidth = listView.Columns[e.ColumnIndex].Width; };
@@ -478,7 +607,7 @@ namespace DualEditorApp
             // Add group selection tracking
             listView.MouseDown += ListViewItemSelectionHandler;
 
-            // Handle double-click on group header by focusing on the action panel
+            // Handle double-click
             listView.MouseDoubleClick += (s, e) =>
             {
                 var info = listView.HitTest(e.X, e.Y);
@@ -486,11 +615,11 @@ namespace DualEditorApp
                 {
                     string groupName = info.Item.Group.Header;
                     currentMonsterSelection = groupName;
-                    
-                    // Find and select the monster in the dropdown instead
+
+                    // Find and select monster in dropdown
                     for (int i = 0; i < monsterSelector.Items.Count; i++)
                     {
-                        if (monsterSelector.Items[i] is MonsterItem monster && 
+                        if (monsterSelector.Items[i] is MonsterItem monster &&
                             monster.OriginalName == groupName)
                         {
                             monsterSelector.SelectedIndex = i;
@@ -500,10 +629,9 @@ namespace DualEditorApp
                 }
             };
 
-            // Add this for better selection behavior
             listView.MultiSelect = false;
 
-            // Add a handler for the ListView itself to support deselection on empty area clicks
+            // Add deselection for empty area clicks
             listView.Click += (s, e) => {
                 var hitInfo = listView.HitTest(listView.PointToClient(Cursor.Position));
                 if (hitInfo.Item == null)
@@ -513,6 +641,91 @@ namespace DualEditorApp
             };
 
             return listView;
+        }
+
+        private void ListViewItemSelectionHandler(object sender, MouseEventArgs e)
+        {
+            // Check if clicking in a header area
+            foreach (ListViewGroup group in gambitListView.Groups)
+            {
+                ListViewItem firstGroupItem = null;
+
+                // Find first item in this group
+                foreach (ListViewItem item in group.Items)
+                {
+                    firstGroupItem = item;
+                    break;
+                }
+
+                if (firstGroupItem != null)
+                {
+                    // Calculate where header would be
+                    int headerTop = firstGroupItem.Bounds.Top - 28;
+                    if (headerTop >= 0)
+                    {
+                        var headerRect = new Rectangle(
+                            0, headerTop, gambitListView.Width, 28);
+
+                        if (headerRect.Contains(e.Location))
+                        {
+                            // Update dropdown but prevent item selection
+                            for (int i = 0; i < monsterSelector.Items.Count; i++)
+                            {
+                                if (monsterSelector.Items[i] is MonsterItem monster &&
+                                    monster.OriginalName == group.Header)
+                                {
+                                    monsterSelector.SelectedIndex = i;
+                                    break;
+                                }
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // Normal selection behavior
+            var hitInfo = gambitListView.HitTest(e.X, e.Y);
+
+            if (hitInfo.Item != null)
+            {
+                // Deselect if already selected
+                if (hitInfo.Item.Selected)
+                {
+                    hitInfo.Item.Selected = false;
+                    return;
+                }
+
+                // Otherwise select this item and deselect others
+                foreach (ListViewItem item in gambitListView.Items)
+                {
+                    item.Selected = (item == hitInfo.Item);
+                }
+
+                // Update dropdown to match group
+                if (hitInfo.Item.Group != null)
+                {
+                    string groupName = hitInfo.Item.Group.Header;
+
+                    for (int i = 0; i < monsterSelector.Items.Count; i++)
+                    {
+                        if (monsterSelector.Items[i] is MonsterItem monster &&
+                            monster.OriginalName == groupName)
+                        {
+                            monsterSelector.SelectedIndex = i;
+                            break;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // Deselect all items
+                foreach (ListViewItem item in gambitListView.Items)
+                {
+                    item.Selected = false;
+                }
+            }
         }
 
         private void DrawColumnHeader(DrawListViewColumnHeaderEventArgs e)
@@ -559,6 +772,63 @@ namespace DualEditorApp
             return img;
         }
 
+        private TableLayoutPanel CreateLayoutPanel()
+        {
+            var layout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                RowCount = 5, // Updated to 5 rows for the new panel
+                ColumnCount = 1,
+                Padding = Margin = new Padding(0),
+                BackColor = Color.FromArgb(40, 40, 40)
+            };
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Header
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Monster actions panel
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Monster properties panel
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Pack settings panel
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F)); // ListView
+            return layout;
+        }
+
+        // Update columns based on pack type
+        private void UpdateListViewColumns(GambitPackType packType)
+        {
+            gambitListView.BeginUpdate();
+
+            // Preserve existing columns
+            string[] existingColumnTexts = new string[gambitListView.Columns.Count];
+            int[] existingColumnWidths = new int[gambitListView.Columns.Count];
+
+            for (int i = 0; i < gambitListView.Columns.Count; i++)
+            {
+                existingColumnTexts[i] = gambitListView.Columns[i].Text;
+                existingColumnWidths[i] = gambitListView.Columns[i].Width;
+            }
+
+            gambitListView.Columns.Clear();
+
+            // Re-add Status, Condition, Action columns
+            gambitListView.Columns.Add("Status", existingColumnWidths[0]);
+
+            // Add type-specific columns
+            if (packType == GambitPackType.TimeLine)
+            {
+                gambitListView.Columns.Add("Timing", 60);
+            }
+            else // RuleSet
+            {
+                gambitListView.Columns.Add("Cooldown", 80);
+            }
+
+            gambitListView.Columns.Add("Condition", existingColumnWidths.Length > 2 ? existingColumnWidths[2] : 140);
+            gambitListView.Columns.Add("Action", existingColumnWidths.Length > 3 ? existingColumnWidths[3] : 200);
+
+            AdjustColumnWidths();
+            gambitListView.EndUpdate();
+            gambitListView.Invalidate();
+        }
+
+        // Adjust column widths based on listview width
         public void AdjustColumnWidths()
         {
             if (gambitListView.Width <= 0) return;
@@ -572,9 +842,9 @@ namespace DualEditorApp
                 gambitListView.Columns[2].Width - 5;
         }
 
+        // Handle clicks on gambit rows
         private void GambitListView_MouseClick(object sender, MouseEventArgs e)
         {
-            // Only handle normal list item clicks
             var hitInfo = gambitListView.HitTest(e.X, e.Y);
             if (hitInfo.Item == null || e.Button != MouseButtons.Left) return;
 
@@ -596,7 +866,10 @@ namespace DualEditorApp
             }
             else if (hitInfo.SubItem == item.SubItems[1])
             {
-                ShowTimingEditor(item, hitInfo.SubItem.Bounds);
+                if (currentPackType == GambitPackType.TimeLine)
+                    ShowTimingEditor(item, hitInfo.SubItem.Bounds);
+                else
+                    ShowCooldownEditor(item, hitInfo.SubItem.Bounds);
             }
             else if (hitInfo.SubItem == item.SubItems[3])
             {
@@ -604,6 +877,62 @@ namespace DualEditorApp
             }
         }
 
+        // Modified to handle HP thresholds
+        private void ShowConditionDropdown(ListViewItem item, Rectangle bounds)
+        {
+            var gambit = item.Tag as Gambit;
+            if (gambit == null) return;
+
+            var dropdown = new ComboBox
+            {
+                Location = bounds.Location,
+                Width = bounds.Width,
+                Height = bounds.Height,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = Color.White
+            };
+
+            string[] conditions = { "None", "Self", "Player", "PlayerAndAlly", "Ally",
+                "BNpc", "TopHateTarget", "HPSelfPctLessThanTarget" };
+
+            foreach (var condition in conditions)
+                dropdown.Items.Add(MapConditionToDisplay(condition));
+
+            dropdown.SelectedItem = MapConditionToDisplay(gambit.Condition);
+            dropdown.SelectedIndexChanged += (s, e) => {
+                string displayText = dropdown.SelectedItem.ToString();
+                gambit.Condition = MapDisplayToCondition(displayText);
+                item.SubItems[2].Text = displayText;
+
+                // If HP condition selected, show threshold editor
+                if (gambit.Condition == "HPSelfPctLessThanTarget")
+                {
+                    gambitListView.Controls.Remove(dropdown);
+                    ShowHPThresholdEditor(item, bounds, gambit);
+                }
+                else
+                {
+                    gambitListView.Controls.Remove(dropdown);
+                    SyncToJson();
+                    DeselectAllItems();
+                }
+            };
+
+            dropdown.LostFocus += (s, e) => {
+                if (!dropdown.DroppedDown)
+                {
+                    gambitListView.Controls.Remove(dropdown);
+                    DeselectAllItems();
+                }
+            };
+
+            gambitListView.Controls.Add(dropdown);
+            dropdown.Focus();
+            dropdown.DroppedDown = true;
+        }
+
+        // Show timing editor for TimeLine pack items
         private void ShowTimingEditor(ListViewItem item, Rectangle bounds)
         {
             var gambit = item.Tag as Gambit;
@@ -660,8 +989,6 @@ namespace DualEditorApp
                     item.SubItems[1].Text = value.ToString();
                     gambitListView.Controls.Remove(timingEditor);
                     SyncToJson();
-                    
-                    // Use DeselectAllItems instead of just setting focus
                     DeselectAllItems();
                 }
                 else
@@ -676,45 +1003,125 @@ namespace DualEditorApp
             timingEditor.Focus();
         }
 
-        private void ShowConditionDropdown(ListViewItem item, Rectangle bounds)
+        // Show cooldown editor for RuleSet pack items
+        private void ShowCooldownEditor(ListViewItem item, Rectangle bounds)
         {
             var gambit = item.Tag as Gambit;
             if (gambit == null) return;
 
-            var dropdown = new ComboBox
+            var cooldownEditor = new TextBox
             {
                 Location = bounds.Location,
                 Width = bounds.Width,
                 Height = bounds.Height,
-                DropDownStyle = ComboBoxStyle.DropDownList,
+                Text = gambit.CoolDown.ToString(),
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = Color.White,
+                TextAlign = HorizontalAlignment.Center
+            };
+
+            cooldownEditor.SelectAll();
+
+            cooldownEditor.KeyPress += (s, e) => {
+                // Allow digits, backspace, and delete
+                if (!char.IsDigit(e.KeyChar) && e.KeyChar != 8 && e.KeyChar != 127)
+                {
+                    e.Handled = true;
+                }
+            };
+
+            cooldownEditor.KeyDown += (s, e) => {
+                if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Return)
+                {
+                    SaveCooldownValue();
+                }
+                else if (e.KeyCode == Keys.Escape)
+                {
+                    gambitListView.Controls.Remove(cooldownEditor);
+                    gambitListView.Focus();
+                }
+            };
+
+            cooldownEditor.LostFocus += (s, e) => {
+                SaveCooldownValue();
+            };
+
+            void SaveCooldownValue()
+            {
+                if (uint.TryParse(cooldownEditor.Text, out uint value))
+                {
+                    gambit.CoolDown = value;
+                    item.SubItems[1].Text = value.ToString();
+                    gambitListView.Controls.Remove(cooldownEditor);
+                    SyncToJson();
+                    DeselectAllItems();
+                }
+                else
+                {
+                    cooldownEditor.Text = gambit.CoolDown.ToString();
+                    cooldownEditor.SelectAll();
+                }
+            }
+
+            gambitListView.Controls.Add(cooldownEditor);
+            cooldownEditor.Focus();
+        }
+
+        // New method to show HP threshold editor
+        private void ShowHPThresholdEditor(ListViewItem item, Rectangle bounds, Gambit gambit)
+        {
+            var thresholdPanel = new Panel
+            {
+                Location = bounds.Location,
+                Width = bounds.Width,
+                Height = bounds.Height + 30, // Taller panel
+                BackColor = Color.FromArgb(50, 50, 60),
+                BorderStyle = BorderStyle.FixedSingle
+            };
+
+            var label = new Label
+            {
+                Text = "HP Threshold %:",
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(5, 5)
+            };
+
+            var editor = new NumericUpDown
+            {
+                Location = new Point(5, 25),
+                Width = bounds.Width - 10,
+                Minimum = 1,
+                Maximum = 100,
+                Value = gambit.HPThreshold > 0 ? gambit.HPThreshold : 50, // Default to 50%
                 BackColor = Color.FromArgb(60, 60, 60),
                 ForeColor = Color.White
             };
 
-            string[] conditions = { "None", "Self", "Player", "PlayerAndAlly", "Ally",
-                "BNpc", "TopHateTarget", "HPSelfPctLessThanTarget" };
-
-            foreach (var condition in conditions)
-                dropdown.Items.Add(MapConditionToDisplay(condition));
-
-            dropdown.SelectedItem = MapConditionToDisplay(gambit.Condition);
-            dropdown.SelectedIndexChanged += (s, e) => {
-                string displayText = dropdown.SelectedItem.ToString();
-                gambit.Condition = MapDisplayToCondition(displayText);
-                item.SubItems[2].Text = displayText;
-                gambitListView.Controls.Remove(dropdown);
+            var okButton = new Button
+            {
+                Text = "OK",
+                BackColor = Color.FromArgb(80, 120, 80),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Size = new Size(60, 25),
+                Location = new Point(bounds.Width - 70, bounds.Height)
+            };
+            okButton.FlatAppearance.BorderSize = 0;
+            okButton.Click += (s, e) => {
+                gambit.HPThreshold = (uint)editor.Value;
+                item.SubItems[2].Text = $"HP < {gambit.HPThreshold}%";
+                gambitListView.Controls.Remove(thresholdPanel);
                 SyncToJson();
                 DeselectAllItems();
             };
 
-            dropdown.LostFocus += (s, e) => {
-                gambitListView.Controls.Remove(dropdown);
-                DeselectAllItems();
-            };
+            thresholdPanel.Controls.Add(label);
+            thresholdPanel.Controls.Add(editor);
+            thresholdPanel.Controls.Add(okButton);
 
-            gambitListView.Controls.Add(dropdown);
-            dropdown.Focus();
-            dropdown.DroppedDown = true;
+            gambitListView.Controls.Add(thresholdPanel);
+            editor.Focus();
         }
 
         private void ShowActionDropdown(ListViewItem item, Rectangle bounds)
@@ -722,7 +1129,6 @@ namespace DualEditorApp
             var gambit = item.Tag as Gambit;
             if (gambit == null) return;
 
-            // Create a custom ComboBox with better search handling
             var dropdown = new ComboBox
             {
                 Location = bounds.Location,
@@ -731,13 +1137,10 @@ namespace DualEditorApp
                 DropDownStyle = ComboBoxStyle.DropDown,
                 BackColor = Color.FromArgb(60, 60, 60),
                 ForeColor = Color.White,
-                Cursor = Cursors.Default // Explicitly set cursor
+                Cursor = Cursors.Default
             };
 
-            // Flag to prevent recursive TextChanged events
             bool updatingItems = false;
-
-            // Use a timer to debounce text changes and help prevent cursor issues
             var filterTimer = new Timer { Interval = 150 };
             filterTimer.Tick += (s, e) => {
                 filterTimer.Stop();
@@ -748,35 +1151,26 @@ namespace DualEditorApp
                     updatingItems = true;
                     string searchText = dropdown.Text.ToLower();
 
-                    // Filter actions by ID or name
                     var filteredItems = actionDisplayMap.OrderBy(a => a.Key)
                         .Where(a => a.Key.ToString().Contains(searchText) ||
                                    a.Value.ToLower().Contains(searchText))
                         .Select(a => new ActionItem(a.Key, a.Value))
                         .ToArray();
 
-                    // Save current state
                     int selectionStart = dropdown.SelectionStart;
                     string currentText = dropdown.Text;
 
-                    // Suppress flicker
                     dropdown.BeginUpdate();
-
-                    // Update items
                     dropdown.Items.Clear();
                     dropdown.Items.AddRange(filteredItems);
-
-                    // Restore state
                     dropdown.Text = currentText;
                     dropdown.SelectionStart = selectionStart;
-
                     dropdown.EndUpdate();
 
-                    // Ensure dropdown stays open
                     if (filteredItems.Length > 0)
                     {
                         dropdown.DroppedDown = true;
-                        Cursor.Current = Cursors.Default; // Force cursor to remain visible
+                        Cursor.Current = Cursors.Default;
                     }
                 }
                 finally
@@ -785,15 +1179,11 @@ namespace DualEditorApp
                 }
             };
 
-            // Create a list of all actions for initial load
             var allActions = actionDisplayMap.OrderBy(a => a.Key)
                 .Select(a => new ActionItem(a.Key, a.Value))
                 .ToArray();
-
-            // Initialize dropdown
             dropdown.Items.AddRange(allActions);
 
-            // Select the current action if it exists
             if (actionDisplayMap.TryGetValue(gambit.ActionId, out string actionName))
             {
                 for (int i = 0; i < dropdown.Items.Count; i++)
@@ -807,7 +1197,6 @@ namespace DualEditorApp
                 }
             }
 
-            // Use timer to debounce text changes
             dropdown.TextChanged += (s, e) => {
                 if (updatingItems) return;
                 filterTimer.Stop();
@@ -820,11 +1209,8 @@ namespace DualEditorApp
                     gambit.ActionId = selectedAction.Id;
                     gambit.Description = selectedAction.Name;
                     item.SubItems[3].Text = selectedAction.Name;
-
-                    // Clean up resources
                     filterTimer.Stop();
                     filterTimer.Dispose();
-
                     gambitListView.Controls.Remove(dropdown);
                     SyncToJson();
                     DeselectAllItems();
@@ -832,7 +1218,6 @@ namespace DualEditorApp
             };
 
             dropdown.LostFocus += (s, e) => {
-                // Only remove if not actively selecting from dropdown
                 if (!dropdown.DroppedDown)
                 {
                     filterTimer.Stop();
@@ -853,14 +1238,12 @@ namespace DualEditorApp
                     }
                     else if (dropdown.Items.Count > 0)
                     {
-                        // Select first item if nothing specifically selected
                         var firstAction = (ActionItem)dropdown.Items[0];
                         gambit.ActionId = firstAction.Id;
                         gambit.Description = firstAction.Name;
                         item.SubItems[3].Text = firstAction.Name;
                     }
 
-                    // Clean up
                     filterTimer.Stop();
                     filterTimer.Dispose();
                     gambitListView.Controls.Remove(dropdown);
@@ -879,7 +1262,7 @@ namespace DualEditorApp
             gambitListView.Controls.Add(dropdown);
             dropdown.Focus();
             dropdown.DroppedDown = true;
-            Cursor.Current = Cursors.Default; // Ensure cursor is visible initially
+            Cursor.Current = Cursors.Default;
         }
 
         // Helper class for dropdown items
@@ -895,6 +1278,42 @@ namespace DualEditorApp
             }
 
             public override string ToString() => $"{Id}: {Name}";
+        }
+
+        // Add this class to store both original and display names for monsters
+        private class MonsterItem
+        {
+            public string OriginalName { get; }
+            public string DisplayName { get; }
+
+            public MonsterItem(string original)
+            {
+                OriginalName = original;
+                DisplayName = FormatMonsterName(original);
+            }
+
+            public override string ToString() => DisplayName;
+        }
+
+        // Format monster names by adding spaces between camel case words
+        private static string FormatMonsterName(string rawName)
+        {
+            if (string.IsNullOrEmpty(rawName)) return rawName;
+
+            var result = new System.Text.StringBuilder(rawName.Length * 2);
+            result.Append(rawName[0]);
+
+            for (int i = 1; i < rawName.Length; i++)
+            {
+                if (char.IsUpper(rawName[i]) &&
+                    (i > 0 && !char.IsWhiteSpace(rawName[i - 1]) && char.IsLower(rawName[i - 1])))
+                {
+                    result.Append(' ');
+                }
+                result.Append(rawName[i]);
+            }
+
+            return result.ToString();
         }
 
         private string MapConditionToDisplay(string condition) =>
@@ -915,89 +1334,210 @@ namespace DualEditorApp
                 gambitListView.Groups.Clear();
                 monsterGroups.Clear();
                 gambits.Clear();
-                
-                // Reset UI state
+
                 currentMonsterSelection = null;
-                monsterSelector.Items.Clear();  // Clear the dropdown
+                monsterSelector.Items.Clear();
                 addGambitButton.Enabled = false;
                 deleteDisabledButton.Enabled = false;
 
+                if (string.IsNullOrWhiteSpace(json))
+                {
+                    MessageBox.Show("Cannot load empty JSON", "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
                 var jsonDoc = JsonDocument.Parse(json);
                 var rootEnumerator = jsonDoc.RootElement.EnumerateObject();
-                if (!rootEnumerator.MoveNext()) return;
+                if (!rootEnumerator.MoveNext()) 
+                {
+                    MessageBox.Show("JSON has no root object", "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
 
                 var rootType = rootEnumerator.Current.Name;
-                var monstersElement = jsonDoc.RootElement.GetProperty(rootType);
+                
+                // Check if monsters element exists
+                if (!jsonDoc.RootElement.TryGetProperty(rootType, out var monstersElement))
+                {
+                    MessageBox.Show($"JSON missing '{rootType}' element", "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
 
-                // Create a list to store monster names in the order they appear in JSON
                 List<string> monsterNames = new List<string>();
 
                 foreach (var monsterProperty in monstersElement.EnumerateObject())
                 {
-                    string monsterName = monsterProperty.Name;
-                    monsterNames.Add(monsterName);  // Add to ordered list
-                    JsonElement monsterElement = monsterProperty.Value;
-
-                    var monsterGroup = new ListViewGroup(monsterName);
-                    gambitListView.Groups.Add(monsterGroup);
-                    monsterGroups[monsterName] = monsterGroup;
-
-                    // Load gambits for this monster
-                    var timeLines = monsterElement.GetProperty("gambitPack").GetProperty("timeLines");
-                    foreach (var timeline in timeLines.EnumerateArray())
+                    try
                     {
-                        bool isDisabled = timeline.TryGetProperty("originalCondition", out var _);
-                        string condition = isDisabled ?
-                            timeline.GetProperty("originalCondition").GetString() :
-                            timeline.GetProperty("condition").GetString();
+                        string monsterName = monsterProperty.Name;
+                        monsterNames.Add(monsterName);
+                        JsonElement monsterElement = monsterProperty.Value;
 
-                        var gambit = new Gambit
+                        var monsterGroup = new ListViewGroup(monsterName);
+                        gambitListView.Groups.Add(monsterGroup);
+                        monsterGroups[monsterName] = monsterGroup;
+
+                        // Get monster-level properties
+                        double attackRange = 0;
+                        bool isRanged = false;
+
+                        // Read attackRange from monster level
+                        if (monsterElement.TryGetProperty("attackRange", out var attackRangeElement) &&
+                            attackRangeElement.ValueKind == JsonValueKind.Number)
                         {
-                            Condition = condition,
-                            ActionId = timeline.GetProperty("actionId").GetInt32(),
-                            Timing = timeline.GetProperty("timing").GetInt32(),
-                            Description = timeline.GetProperty("description").GetString(),
-                            ActionParam = timeline.GetProperty("actionParam").GetInt32(),
-                            Enabled = !isDisabled
-                        };
+                            attackRange = attackRangeElement.GetDouble();
+                        }
 
-                        if (timeline.TryGetProperty("radius", out var radius))
-                            gambit.Radius = radius.GetDouble();
+                        // Read isRanged from monster level
+                        if (monsterElement.TryGetProperty("isRanged", out var isRangedElement) &&
+                            (isRangedElement.ValueKind == JsonValueKind.True || isRangedElement.ValueKind == JsonValueKind.False))
+                        {
+                            isRanged = isRangedElement.GetBoolean();
+                        }
 
-                        gambits.Add(gambit);
+                        // Check if gambitPack exists
+                        if (!monsterElement.TryGetProperty("gambitPack", out var gambitPackElement))
+                        {
+                            MessageBox.Show($"Monster '{monsterName}' missing 'gambitPack' element", "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            continue;
+                        }
 
-                        var item = new ListViewItem(new[] {
-                            gambit.Enabled ? "ON" : "OFF",
-                            gambit.Timing.ToString(),
-                            MapConditionToDisplay(gambit.Condition),
-                            gambit.Description
-                        });
+                        // Check for loop count with safer approach
+                        if (gambitPackElement.TryGetProperty("loopCount", out var loopElement) &&
+                            loopElement.ValueKind == JsonValueKind.Number)
+                        {
+                            int loadedLoopCount = loopElement.GetInt32();
+                            if (loadedLoopCount == -1)
+                            {
+                                infiniteLoop = true;
+                                infiniteLoopCheckbox.Checked = true;
+                            }
+                            else
+                            {
+                                loopCount = loadedLoopCount;
+                                loopCountEditor.Value = Math.Max(loopCountEditor.Minimum, 
+                                                      Math.Min(loopCountEditor.Maximum, loopCount));
+                            }
+                        }
 
-                        item.ImageIndex = gambit.Enabled ? 0 : 1;
-                        item.Tag = gambit;
-                        item.Group = monsterGroup;
-                        gambitListView.Items.Add(item);
+                        // Check if timeLines exists
+                        if (!gambitPackElement.TryGetProperty("timeLines", out var timeLines) ||
+                            timeLines.ValueKind != JsonValueKind.Array)
+                        {
+                            MessageBox.Show($"Monster '{monsterName}' missing 'timeLines' array", "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            continue;
+                        }
+
+                        // Load gambits for this monster
+                        foreach (var timeline in timeLines.EnumerateArray())
+                        {
+                            try
+                            {
+                                bool isDisabled = timeline.TryGetProperty("originalCondition", out var _);
+                                
+                                // Get condition safely
+                                string condition;
+                                if (isDisabled)
+                                {
+                                    condition = timeline.TryGetProperty("originalCondition", out var conditionElement) && 
+                                               conditionElement.ValueKind == JsonValueKind.String ?
+                                               conditionElement.GetString() : "None";
+                                }
+                                else
+                                {
+                                    condition = timeline.TryGetProperty("condition", out var conditionElement) && 
+                                               conditionElement.ValueKind == JsonValueKind.String ?
+                                               conditionElement.GetString() : "None";
+                                }
+
+                                // Create gambit with safe property access
+                                var gambit = new Gambit
+                                {
+                                    Condition = condition,
+                                    ActionId = timeline.TryGetProperty("actionId", out var actionId) ? actionId.GetInt32() : 0,
+                                    Timing = timeline.TryGetProperty("timing", out var timing) ? timing.GetInt32() : 0,
+                                    Description = timeline.TryGetProperty("description", out var desc) && 
+                                                 desc.ValueKind == JsonValueKind.String ? 
+                                                 desc.GetString() : "Unknown Action",
+                                    ActionParam = timeline.TryGetProperty("actionParam", out var actionParam) ? 
+                                                 actionParam.GetInt32() : 0,
+                                    Enabled = !isDisabled,
+                                    
+                                    // Use monster-level properties
+                                    AttackRange = attackRange,
+                                    IsRanged = isRanged
+                                };
+
+                                // Load optional properties
+                                if (timeline.TryGetProperty("radius", out var radius) && 
+                                    radius.ValueKind == JsonValueKind.Number)
+                                {
+                                    gambit.Radius = radius.GetDouble();
+                                }
+
+                                if (timeline.TryGetProperty("hpThreshold", out var hpThreshold) &&
+                                    hpThreshold.ValueKind == JsonValueKind.Number)
+                                {
+                                    gambit.HPThreshold = (uint)hpThreshold.GetInt32();
+                                }
+
+                                if (timeline.TryGetProperty("coolDown", out var coolDown) &&
+                                    coolDown.ValueKind == JsonValueKind.Number)
+                                {
+                                    gambit.CoolDown = (uint)coolDown.GetInt32();
+                                }
+
+                                gambits.Add(gambit);
+
+                                // Create display text that may include HP threshold
+                                string conditionDisplayText = MapConditionToDisplay(gambit.Condition);
+                                if (gambit.Condition == "HPSelfPctLessThanTarget" && gambit.HPThreshold > 0)
+                                {
+                                    conditionDisplayText = $"HP < {gambit.HPThreshold}%";
+                                }
+
+                                var item = new ListViewItem(new[] {
+                                    gambit.Enabled ? "ON" : "OFF",
+                                    gambit.Timing.ToString(),
+                                    conditionDisplayText,
+                                    gambit.Description
+                                });
+
+                                item.ImageIndex = gambit.Enabled ? 0 : 1;
+                                item.Tag = gambit;
+                                item.Group = monsterGroup;
+                                gambitListView.Items.Add(item);
+                            }
+                            catch (Exception ex)
+                            {
+                                // Log the error but continue processing other timelines
+                                Console.WriteLine($"Error processing timeline for {monsterName}: {ex.Message}");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Log the error but continue processing other monsters
+                        Console.WriteLine($"Error processing monster {monsterProperty.Name}: {ex.Message}");
                     }
                 }
 
-                // Populate dropdown with monster names in original order
+                // Populate dropdown with monster names
                 foreach (var name in monsterNames)
                 {
                     monsterSelector.Items.Add(new MonsterItem(name));
                 }
-                
-                // Select the first monster if any exist
-                if (monsterSelector.Items.Count > 0)
-                {
-                    monsterSelector.SelectedIndex = 0;
-                }
 
                 AdjustColumnWidths();
-                gambitListView.Invalidate(); // Force redraw to position buttons
+                gambitListView.Invalidate();
+            }
+            catch (JsonException jsonEx)
+            {
+                MessageBox.Show($"Error parsing JSON: {jsonEx.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error loading gambits: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show($"Error loading gambits: {ex.Message}\n\n{ex.StackTrace}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -1005,7 +1545,13 @@ namespace DualEditorApp
         {
             try
             {
-                if (gambits.Count == 0 || parentForm == null) return;
+                if (parentForm == null) return;
+
+                // Store the current selection to reapply highlighting later
+                string monsterToHighlight = currentMonsterSelection;
+
+                // Suspend highlighting during update to prevent flicker
+                parentForm.SuspendHighlighting();
 
                 string currentJson = parentForm.GetEditorText();
                 var jsonDoc = JsonDocument.Parse(currentJson);
@@ -1015,6 +1561,7 @@ namespace DualEditorApp
                 var rootType = rootEnumerator.Current.Name;
                 var jsonNode = JsonNode.Parse(currentJson);
 
+                // Gather gambits by monster
                 var gambitsByMonster = new Dictionary<string, List<Gambit>>();
                 foreach (ListViewItem item in gambitListView.Items)
                 {
@@ -1027,13 +1574,46 @@ namespace DualEditorApp
                     }
                 }
 
-                foreach (var monsterProperty in jsonDoc.RootElement.GetProperty(rootType).EnumerateObject())
+                foreach (var monsterEntry in gambitsByMonster)
                 {
-                    string monsterName = monsterProperty.Name;
-                    if (!gambitsByMonster.ContainsKey(monsterName)) continue;
+                    string monsterName = monsterEntry.Key;
+                    List<Gambit> monsterGambits = monsterEntry.Value;
 
+                    // Skip if the monster doesn't exist in the JSON
+                    if (jsonNode[rootType][monsterName] == null)
+                        continue;
+
+                    // Update baseId and nameId if this is the selected monster
+                    if (monsterName == currentMonsterSelection &&
+                        int.TryParse(baseIdEditor.Text, out int baseId) &&
+                        int.TryParse(nameIdEditor.Text, out int nameId))
+                    {
+                        jsonNode[rootType][monsterName]["baseId"] = baseId;
+                        jsonNode[rootType][monsterName]["nameId"] = nameId;
+                    }
+
+                    // Update attackRange and isRanged from the first gambit
+                    if (monsterGambits.Count > 0)
+                    {
+                        var firstGambit = monsterGambits[0];
+                        jsonNode[rootType][monsterName]["attackRange"] = firstGambit.AttackRange;
+                        jsonNode[rootType][monsterName]["isRanged"] = firstGambit.IsRanged;
+                    }
+
+                    // Set loop count
+                    jsonNode[rootType][monsterName]["gambitPack"]["loopCount"] = infiniteLoop ? -1 : loopCount;
+
+                    // Remove type if it exists
+                    if (jsonNode[rootType][monsterName]["gambitPack"]["type"] != null)
+                    {
+                        ((JsonObject)jsonNode[rootType][monsterName]["gambitPack"]).Remove("type");
+                    }
+
+                    // Create a new timeLines array
                     var timeLines = new JsonArray();
-                    foreach (var gambit in gambitsByMonster[monsterName])
+
+                    // Add all gambits for this monster
+                    foreach (var gambit in monsterGambits)
                     {
                         var timeLineNode = new JsonObject();
 
@@ -1050,9 +1630,22 @@ namespace DualEditorApp
                             timeLineNode.Add("originalActionId", gambit.ActionId);
                         }
 
+                        // Add common properties
                         timeLineNode.Add("timing", gambit.Timing);
                         timeLineNode.Add("description", gambit.Description);
                         timeLineNode.Add("actionParam", gambit.ActionParam);
+
+                        // Add pack-specific properties
+                        if (currentPackType == GambitPackType.RuleSet)
+                        {
+                            timeLineNode.Add("coolDown", (int)gambit.CoolDown);
+                        }
+
+                        // Add condition-specific properties
+                        if (gambit.Condition == "HPSelfPctLessThanTarget" && gambit.HPThreshold > 0)
+                        {
+                            timeLineNode.Add("hpThreshold", (int)gambit.HPThreshold);
+                        }
 
                         if (gambit.Radius.HasValue)
                             timeLineNode.Add("radius", gambit.Radius.Value);
@@ -1060,11 +1653,23 @@ namespace DualEditorApp
                         timeLines.Add(timeLineNode);
                     }
 
+                    // Update the timeLines array in the JSON
                     jsonNode[rootType][monsterName]["gambitPack"]["timeLines"] = timeLines;
                 }
 
+                // Update the text in the editor
                 string updatedJson = jsonNode.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
                 parentForm.SetEditorText(updatedJson);
+
+                // After updating the JSON, reapply the highlighting
+                if (!string.IsNullOrEmpty(monsterToHighlight))
+                {
+                    // Short delay to ensure the editor has updated
+                    this.BeginInvoke(new Action(() => HighlightMonsterInJson(monsterToHighlight)));
+                }
+
+                // Resume highlighting
+                parentForm.ResumeHighlighting();
             }
             catch (Exception ex)
             {
@@ -1072,44 +1677,14 @@ namespace DualEditorApp
             }
         }
 
-        public void ClearGambits()
-        {
-            gambitListView.Items.Clear();
-            gambitListView.Groups.Clear();
-            monsterGroups.Clear();
-            gambits.Clear();
-
-            // Reset UI state
-            currentMonsterSelection = null;
-            addGambitButton.Enabled = false;
-            deleteDisabledButton.Enabled = false;
-        }
-
-        // Simplified ScrollMessageFilter that forces refresh when scrolling
-        private class ScrollMessageFilter : IMessageFilter
-        {
-            private readonly ListView listView;
-            private const int WM_VSCROLL = 0x115;
-            private const int WM_MOUSEWHEEL = 0x20A;
-
-            public ScrollMessageFilter(ListView listView) => this.listView = listView;
-
-            public bool PreFilterMessage(ref Message m)
-            {
-                if ((m.Msg == WM_VSCROLL || m.Msg == WM_MOUSEWHEEL) && m.HWnd == listView.Handle)
-                    listView.BeginInvoke(new Action(() => listView.Refresh()));
-                return false;
-            }
-        }
-
         private void AddNewGambit(string groupName)
         {
-            // Create a new default gambit
             var newGambit = new Gambit
             {
                 Condition = "None",
                 ActionId = 0,
                 Timing = 0,
+                CoolDown = 0,
                 Description = "New Action",
                 ActionParam = 0,
                 Enabled = true
@@ -1117,26 +1692,23 @@ namespace DualEditorApp
 
             gambits.Add(newGambit);
 
-            // Create and add a new item to the ListView
             var item = new ListViewItem(new[] {
                 "ON",
-                "0",
+                "0", // Timing or cooldown
                 "No target",
                 "New Action"
             });
 
-            item.ImageIndex = 0; // Enabled icon
+            item.ImageIndex = 0;
             item.Tag = newGambit;
             item.Group = monsterGroups[groupName];
             gambitListView.Items.Add(item);
 
-            // Update the JSON
             SyncToJson();
         }
 
         private void DeleteDisabledGambits(string groupName)
         {
-            // Make a separate list to avoid modifying collection during enumeration
             var itemsToRemove = new List<ListViewItem>();
             var gambitsToRemove = new List<Gambit>();
 
@@ -1149,7 +1721,6 @@ namespace DualEditorApp
                 }
             }
 
-            // Remove items if any were found
             if (itemsToRemove.Count > 0)
             {
                 foreach (var item in itemsToRemove)
@@ -1167,48 +1738,8 @@ namespace DualEditorApp
             }
         }
 
-        // Add this class to store both original and display names for monsters
-        private class MonsterItem
-        {
-            public string OriginalName { get; }
-            public string DisplayName { get; }
-            
-            public MonsterItem(string original)
-            {
-                OriginalName = original;
-                // Use the static version of FormatMonsterName
-                DisplayName = FormatMonsterName(original);
-            }
-            
-            public override string ToString() => DisplayName;
-        }
-
-        // Make this method static since it's used by MonsterItem
-        private static string FormatMonsterName(string rawName)
-        {
-            if (string.IsNullOrEmpty(rawName)) return rawName;
-            
-            // Insert spaces before capital letters (except the first one)
-            var result = new System.Text.StringBuilder(rawName.Length * 2);
-            result.Append(rawName[0]);
-            
-            for (int i = 1; i < rawName.Length; i++)
-            {
-                if (char.IsUpper(rawName[i]) && 
-                    (i > 0 && !char.IsWhiteSpace(rawName[i - 1]) && char.IsLower(rawName[i - 1])))
-                {
-                    result.Append(' ');
-                }
-                result.Append(rawName[i]);
-            }
-            
-            return result.ToString();
-        }
-
-        // Add this helper method to deselect all items - with improved implementation
         private void DeselectAllItems()
         {
-            // Check if we need to do anything
             bool hasSelections = false;
             foreach (ListViewItem item in gambitListView.Items)
             {
@@ -1218,25 +1749,19 @@ namespace DualEditorApp
                     break;
                 }
             }
-            
+
             if (!hasSelections)
                 return;
-                
-            // Take focus away from ListView first
+
             this.Focus();
-            
-            // Temporarily suspend layout
             gambitListView.BeginUpdate();
-            
-            // Clear all selections using multiple approaches for reliability
             gambitListView.SelectedItems.Clear();
-            
+
             foreach (ListViewItem item in gambitListView.Items)
             {
                 item.Selected = false;
             }
-            
-            // Resume layout and force redraw
+
             gambitListView.EndUpdate();
             gambitListView.Invalidate();
             gambitListView.Update();
@@ -1245,17 +1770,163 @@ namespace DualEditorApp
         // Add this method to handle clicks on the panel
         private void Panel_Click(object sender, EventArgs e)
         {
-            // Only handle clicks directly on the panel
             if (sender == this)
             {
                 DeselectAllItems();
             }
         }
 
-        // Add a public method to allow deselection from outside
+        // Scroll message filter for smooth scrolling
+        private class ScrollMessageFilter : IMessageFilter
+        {
+            private readonly ListView listView;
+            private const int WM_VSCROLL = 0x115;
+            private const int WM_MOUSEWHEEL = 0x20A;
+
+            public ScrollMessageFilter(ListView listView) => this.listView = listView;
+
+            public bool PreFilterMessage(ref Message m)
+            {
+                if ((m.Msg == WM_VSCROLL || m.Msg == WM_MOUSEWHEEL) && m.HWnd == listView.Handle)
+                    listView.BeginInvoke(new Action(() => listView.Refresh()));
+                return false;
+            }
+        }
+
         public void ClearSelection()
         {
             DeselectAllItems();
+        }
+
+        // Add this method to the GambitPanel class
+        public void ClearGambits()
+        {
+            gambitListView.Items.Clear();
+            gambitListView.Groups.Clear();
+            monsterGroups.Clear();
+            gambits.Clear();
+
+            // Reset UI state
+            currentMonsterSelection = null;
+            monsterSelector.Items.Clear();
+            addGambitButton.Enabled = false;
+            deleteDisabledButton.Enabled = false;
+
+            // Reset pack type to default
+            currentPackType = GambitPackType.TimeLine;
+            //packTypeSelector.SelectedIndex = 0;
+
+            // Reset loop values
+            loopCount = 1;
+            loopCountEditor.Value = 1;
+            infiniteLoop = false;
+            infiniteLoopCheckbox.Checked = false;
+
+            // Make sure timeline settings are visible
+            extraParamsPanel.Visible = true;
+
+            // Update UI
+            gambitListView.Invalidate();
+        }
+
+        // In the UpdateMonsterPropertyControls method:
+        private void UpdateMonsterPropertyControls(string monsterName)
+        {
+            try
+            {
+                // Get the current JSON to read the IDs
+                string json = parentForm.GetEditorText();
+                var jsonDoc = JsonDocument.Parse(json);
+                var rootEnumerator = jsonDoc.RootElement.EnumerateObject();
+                if (!rootEnumerator.MoveNext()) return;
+
+                var rootType = rootEnumerator.Current.Name;
+
+                // Find the selected monster
+                if (jsonDoc.RootElement.TryGetProperty(rootType, out var monstersElement) &&
+                    monstersElement.TryGetProperty(monsterName, out var monsterElement))
+                {
+                    // Read baseId and nameId
+                    int baseId = monsterElement.TryGetProperty("baseId", out var baseIdElement) ?
+                        baseIdElement.GetInt32() : 0;
+                    int nameId = monsterElement.TryGetProperty("nameId", out var nameIdElement) ?
+                        nameIdElement.GetInt32() : 0;
+
+                    // Update the text fields
+                    baseIdEditor.Text = baseId.ToString();
+                    nameIdEditor.Text = nameId.ToString();
+                }
+
+                // Find first gambit for this monster to get its properties
+                var firstGambit = gambits.FirstOrDefault(g =>
+                    gambitListView.Items.Cast<ListViewItem>()
+                        .Any(item => item.Group?.Header == monsterName && item.Tag == g));
+
+                if (firstGambit != null)
+                {
+                    // Update attack range and isRanged controls
+                    decimal minValue = attackRangeEditor.Minimum;
+                    decimal maxValue = attackRangeEditor.Maximum;
+                    decimal attackRange = (decimal)firstGambit.AttackRange;
+
+                    // Clamp value between min and max
+                    decimal clampedValue = Math.Min(maxValue, Math.Max(minValue, attackRange));
+                    attackRangeEditor.Value = clampedValue;
+
+                    // Update checkbox
+                    isRangedCheckbox.Checked = firstGambit.IsRanged;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating monster properties: {ex.Message}");
+            }
+        }
+
+        // Add this new method to the GambitPanel class
+        private void HighlightMonsterInJson(string monsterName)
+        {
+            if (parentForm == null) return;
+            
+            try
+            {
+                // Get the current JSON
+                string json = parentForm.GetEditorText();
+                
+                // Find the monster section in the JSON
+                string pattern = $"\"{monsterName}\"\\s*:\\s*\\{{";
+                int startPos = -1;
+                
+                // Find the position of the monster's entry
+                System.Text.RegularExpressions.Match match = 
+                    System.Text.RegularExpressions.Regex.Match(json, pattern);
+                
+                if (match.Success)
+                {
+                    startPos = match.Index;
+                    
+                    // Find the end of the monster section (matching closing brace)
+                    int braceCount = 1;
+                    int endPos = match.Index + match.Length;
+                    
+                    while (braceCount > 0 && endPos < json.Length)
+                    {
+                        if (json[endPos] == '{') braceCount++;
+                        else if (json[endPos] == '}') braceCount--;
+                        endPos++;
+                    }
+                    
+                    if (braceCount == 0)
+                    {
+                        // Request the main form to highlight this section
+                        parentForm.HighlightJsonSection(startPos, endPos);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error highlighting monster in JSON: {ex.Message}");
+            }
         }
     }
 }
