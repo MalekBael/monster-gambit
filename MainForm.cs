@@ -3,7 +3,6 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
-using System.Threading.Tasks;
 
 namespace DualEditorApp
 {
@@ -267,10 +266,7 @@ namespace DualEditorApp
             }));
         }
 
-        private void MainForm_Load_1(object sender, EventArgs e)
-        {
 
-        }
 
         private void SearchButton_Click(object sender, EventArgs e)
         {
