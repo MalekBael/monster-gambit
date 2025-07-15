@@ -37,7 +37,6 @@
             ClientSize = new System.Drawing.Size(800, 450);
             Name = "MainForm";
             Text = "Form1";
-            Load += MainForm_Load_1;
             ResumeLayout(false);
         }
 
